@@ -34,8 +34,8 @@ The project includes:
 1.  **Clone the Repository**
 
     ```bash
-    git clone <your-repository-url>
-    cd <your-repository-folder>
+    git clone git@github.com:droptical-GmbH/droptical_python_api_client.git
+    cd git@github.com:droptical-GmbH/droptical_python_api_client.git
     ```
 
 2.  **Create and Activate a Virtual Environment**
