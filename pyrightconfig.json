@@ -1,0 +1,11 @@
+{
+  "include": ["."],
+  "exclude": ["**/node_modules",
+              "**/__pycache__",
+              ".venv",
+              "venv"
+  ],
+  "reportMissingImports": true,
+  "pythonVersion": "3.10",
+  "pythonPlatform": "All"
+}

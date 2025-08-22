@@ -1,0 +1,105 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "droptical-api-client"
+version = "0.1.0"
+authors = [
+  { name="Angelo Alvarez", email="angelo.alvarez@droptical-systems.com" },
+]
+description = "A Python client for the droptical device API and the TCP video stream."
+readme = "README.md"
+license = { text = "MIT License" }
+requires-python = ">=3.10"
+keywords = ["droptical", "api", "client", "video", "stream"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+]
+dependencies = [
+    "requests",
+    "pydantic",
+    "numpy",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/droptical-GmbH/droptical-api-client"
+"Repository" = "https://github.com/droptical-GmbH/droptical-api-client"
+"Bug Tracker" = "https://github.com/droptical-GmbH/droptical-api-client/issues"
+
+[project.optional-dependencies]
+image = [
+    "Pillow",
+]
+stream = [
+    "lz4",
+    "zstandard",
+]
+opencv = ["opencv-python"]
+gui = ["PyQt6", "pyinstaller"]
+test = ["pytest", "flask", "pip-licenses"]
+# dev = ["droptical-api-client[image,stream,opencv,gui,test]", "ruff", "mypy", "black", "pre-commit", "types-requests", "pip-licenses"]
+
+[tool.black]
+line-length = 200
+
+[tool.ruff]
+# Set the same line length as black
+line-length = 200
+
+# Ruff should be compatible with Python 3.10
+target-version = "py310"
+
+[tool.ruff.lint]
+# Enable rules from pycodestyle (E, W), Pyflakes (F), isort (I),
+# flake8-bugbear (B) and pyupgrade (UP).
+select = ["E", "F", "W", "I", "B", "UP"]
+
+# Ignore certain rules if needed. Leave empty for now.
+ignore = []
+
+[tool.ruff.lint.isort]
+# Helps isort recognize the project's own modules
+known-first-party = ["droptical_api_client", "examples", "tests"]
+
+[tool.mypy]
+# Enable the Pydantic plugin for mypy
+plugins = "pydantic.mypy"
+
+# Instructs mypy to use 'mypy_path' as the base for the package structure.
+# This is the most robust method to prevent "Source file found twice" errors
+# in uninstalled projects (e.g., with pre-commit).
+explicit_package_bases = true
+
+# A list of regular expressions of files/directories to exclude from type checking.
+# It's good practice to exclude build artifacts.
+exclude = [
+    "dist/",
+    "build/",
+]
+# Ignore errors for libraries that don't have type stubs (like PyQt6, cv2)
+ignore_missing_imports = true
+
+# Require type annotations for all function definitions
+disallow_untyped_defs = true
+
+# Be stricter about the use of 'Any'
+warn_return_any = true
+warn_unused_ignores = true
+
+# Define the source path. This is important for mypy to find the modules.
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["PyQt6.*", "cv2"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = "src"
+testpaths = "tests"
