@@ -78,7 +78,7 @@ The project includes:
         ```
     *   **GUI Example (`gui`):** For running and building the PyQt6 GUI example.
         ```bash
-        pip install '.[gui]'
+        pip install '.[stream,gui]'
         ```
 
     **Full Installation (for running all examples):**
