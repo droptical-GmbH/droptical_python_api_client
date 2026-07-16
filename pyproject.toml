@@ -4,9 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "droptical-api-client"
-version = "0.1.0"
+# Versioned 1:1 with the device's OpenAPI spec (openapi.yaml).
+version = "2.0.0"
 authors = [
-  { name="Angelo Alvarez", email="angelo.alvarez@droptical-systems.com" },
+  { name="Angelo Alvarez", email="angelo.alvarez@droptical-systems.com" }
 ]
 description = "A Python client for the droptical device API and the TCP video stream."
 readme = "README.md"
@@ -29,9 +30,9 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/droptical-GmbH/droptical-api-client"
-"Repository" = "https://github.com/droptical-GmbH/droptical-api-client"
-"Bug Tracker" = "https://github.com/droptical-GmbH/droptical-api-client/issues"
+"Homepage" = "https://github.com/droptical-GmbH/droptical_python_api_client"
+"Repository" = "https://github.com/droptical-GmbH/droptical_python_api_client"
+"Bug Tracker" = "https://github.com/droptical-GmbH/droptical_python_api_client/issues"
 
 [project.optional-dependencies]
 image = [
@@ -42,9 +43,10 @@ stream = [
     "zstandard",
 ]
 opencv = ["opencv-python"]
-gui = ["PyQt6", "pyinstaller"]
-test = ["pytest", "flask", "pip-licenses"]
-# dev = ["droptical-api-client[image,stream,opencv,gui,test]", "ruff", "mypy", "black", "pre-commit", "types-requests", "pip-licenses"]
+events = ["websocket-client"]  # realtime event stream (Reverb/Pusher over WebSocket); Apache-2.0
+gui = ["PySide6", "shiboken6", "pyinstaller"]  # PySide6/shiboken6 are LGPL-3.0 (keeps the bundled app MIT); PyInstaller is GPL-with-exception (no licence imposed on output)
+test = ["pytest", "pip-licenses"]  # integration tests run against a live backend (see tests/conftest.py)
+dev = ["droptical-api-client[image,stream,opencv,events,gui,test]", "ruff", "mypy", "black", "pre-commit", "types-requests", "pip-licenses"]
 
 [tool.black]
 line-length = 200
@@ -83,7 +85,7 @@ exclude = [
     "dist/",
     "build/",
 ]
-# Ignore errors for libraries that don't have type stubs (like PyQt6, cv2)
+# Ignore errors for libraries that don't have type stubs (like PySide6, cv2)
 ignore_missing_imports = true
 
 # Require type annotations for all function definitions
@@ -97,7 +99,7 @@ warn_unused_ignores = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["PyQt6.*", "cv2"]
+module = ["PySide6.*", "shiboken6", "cv2"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -16,24 +16,29 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
 # --- Setup Command-Line Argument Parsing ---
 parser = argparse.ArgumentParser(description="Stream live frames from a droptical device to the console.")
-parser.add_argument("ip_address", type=str, nargs="?", default="127.0.0.1", help="The IP address or hostname of the droptical device. Defaults to 127.0.0.1 (mock server).")
+parser.add_argument("ip_address", type=str, nargs="?", default="127.0.0.1", help="The IP address or hostname of the droptical device. Defaults to 127.0.0.1.")
+parser.add_argument("port", type=int, nargs="?", default=80, help="The device API port. Default: 80.")
 args = parser.parse_args()
 
 api = dropticalAPIClient()
 
 try:
     print(f"Connecting to device at: {args.ip_address}")
-    api.connect(args.ip_address)
+    api.connect(args.ip_address, api_port=args.port)
+
+    # The image stream is mode-neutral: put the device into a streaming-capable
+    # mode explicitly (in lab/production each frame also carries frame.metadata).
+    api.set_streaming_mode()
 
     print("Starting live stream. Press CTRL+C to stop.")
 
     # The 'with' statement ensures the stream is always started cleanly
     # and stopped at the end, even if errors occur.
-    with api.streaming_session() as frame_stream:
+    with api.image_stream_session() as frame_stream:
         # The 'for' loop elegantly waits for the next frame.
         # The code is non-blocking for the CPU while waiting for I/O.
         for frame in frame_stream:
-            print(f"Live frame received: ID={frame.id1}, Latency={frame.latency_ms:.1f}ms, Size={frame.width}x{frame.height}")
+            print(f"Live frame received: ID={frame.index}, Latency={frame.latency_ms:.1f}ms, Size={frame.width}x{frame.height}")
 
             # This is where the processing would happen, e.g.,
             # displaying the image in a GUI.

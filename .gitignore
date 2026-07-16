@@ -1,0 +1,25 @@
+# Virtual environments
+.venv/
+
+# OS
+.DS_Store
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build / packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Example run output
+burst_session/
+client.log
+
+NOTES.md
