@@ -1,0 +1,57 @@
+# Builds the PySide6 GUI example (examples/gui) into a distributable app for
+# Windows and macOS, mirroring the local examples/gui/build.{sh,bat} steps.
+#
+# NOTE: the GUI uses PySide6/shiboken6 (LGPL-3.0), so the bundled app itself can
+# stay MIT. LGPL only requires that the Qt libraries remain replaceable (satisfied
+# by the one-folder build) and that their source/offer is provided. PyInstaller
+# imposes no licence on the output. See examples/gui/THIRD_PARTY_NOTICES.md.
+#
+# Artifacts are unsigned: on macOS the .app is Gatekeeper-quarantined (right-click
+# → Open, or `xattr -dr com.apple.quarantine <app>`); on Windows SmartScreen may warn.
+name: Build GUI
+
+on:
+  workflow_dispatch:        # run on demand from the Actions tab
+  push:
+    tags:
+      - 'v*'                # and on version tags
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: dropticalGUI-windows
+            path: "examples/gui/dist/Droptical API Example Client"
+          - os: macos-latest
+            artifact: dropticalGUI-macos-arm64
+            path: "examples/gui/dist/Droptical API Example Client.app"
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the GUI example and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[gui]"
+
+      - name: Build with PyInstaller
+        working-directory: examples/gui
+        run: pyinstaller --noconfirm --clean dropticalGUI.spec
+
+      - name: Upload the built app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
+          if-no-files-found: error

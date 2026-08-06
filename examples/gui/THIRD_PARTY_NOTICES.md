@@ -1,11 +1,20 @@
-### PyQt6
+### PySide6
 
-- License: GPL-3.0 (or commercial)
+- License: LGPL-3.0
 
 - Copyright notice:
-  > Copyright (c) Riverbank Computing Limited.
+  > Copyright (c) The Qt Company Ltd.
 
-- Source: https://www.riverbankcomputing.com/software/pyqt/
+- Source: https://www.qt.io/qt-for-python
+
+### shiboken6
+
+- License: LGPL-3.0
+
+- Copyright notice:
+  > Copyright (c) The Qt Company Ltd.
+
+- Source: https://www.qt.io/qt-for-python
 
 ### PyInstaller
 

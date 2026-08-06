@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(project_root, "src"))
 
 import cv2  # noqa: E402
 
-from droptical_api_client import DeviceError, dropticalAPIClientCapture  # noqa: E402
+from droptical_api_client import DeviceError, dropticalAPIClient, dropticalImageStreamCapture  # noqa: E402
 
 # --- Set up command-line arguments ---
 parser = argparse.ArgumentParser(description="Connects to a Droptical device, detects a droplet, and draws its contour and bounding box.")
@@ -21,15 +21,22 @@ parser.add_argument(
     type=str,
     nargs="?",
     default="127.0.0.1",
-    help="The IP address or hostname of the Droptical device. Defaults to 127.0.0.1 (for the mock server).",
+    help="The IP address or hostname of the Droptical device. Defaults to 127.0.0.1.",
 )
+parser.add_argument("port", type=int, nargs="?", default=80, help="Device API port. Default: 80.")
 args = parser.parse_args()
 
 print(f"Attempting to connect to the device at {args.ip_address}...")
 
 try:
+    # The capture wrapper is mode-neutral, so put the device into streaming mode
+    # first via a short-lived control client before opening the stream.
+    control = dropticalAPIClient()
+    control.connect(args.ip_address, api_port=args.port)
+    control.set_streaming_mode()
+
     # The 'with' statement ensures that resources are released at the end.
-    with dropticalAPIClientCapture(args.ip_address) as cap:
+    with dropticalImageStreamCapture(args.ip_address, api_port=args.port) as cap:
         if not cap.isOpened():
             print("Error: Could not open the video stream.")
             exit()
@@ -59,7 +66,7 @@ try:
                 # --- Image processing for droplet detection ---
 
                 # 1. Convert to grayscale if the image is in color
-                # The mock server sends grayscale images by default, so this check is important.
+                # The device may send grayscale images, so this check is important.
                 if len(frame.shape) == 3 and frame.shape[2] == 3:
                     # The image is 3-channel (BGR), so we convert it.
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)

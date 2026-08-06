@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(project_root, "src"))
 
 import cv2  # noqa: E402
 
-from droptical_api_client import dropticalAPIClientCapture  # noqa: E402
+from droptical_api_client import dropticalAPIClient, dropticalImageStreamCapture  # noqa: E402
 
 # --- Setup Command-Line Argument Parsing ---
 parser = argparse.ArgumentParser(description="Connect to a droptical device stream using an OpenCV-like interface.")
@@ -18,15 +18,22 @@ parser.add_argument(
     type=str,
     nargs="?",
     default="127.0.0.1",
-    help="The IP address or hostname of the droptical device. Defaults to 127.0.0.1 (mock server).",  # Makes the argument optional
+    help="The IP address or hostname of the droptical device. Defaults to 127.0.0.1.",  # Makes the argument optional
 )
+parser.add_argument("port", type=int, nargs="?", default=80, help="Device API port. Default: 80.")
 args = parser.parse_args()
 
 print(f"Attempting to connect to device at: {args.ip_address}")
 
-# Simply replace cv2.VideoCapture(0) with the 'dropticalAPIClientCapture' wrapper class
+# The capture wrapper is mode-neutral, so put the device into streaming mode first
+# via a short-lived control client before opening the stream.
+control = dropticalAPIClient()
+control.connect(args.ip_address, api_port=args.port)
+control.set_streaming_mode()
+
+# Simply replace cv2.VideoCapture(0) with the 'dropticalImageStreamCapture' wrapper class
 # The IP address is passed from the command line.
-cap = dropticalAPIClientCapture(args.ip_address)
+cap = dropticalImageStreamCapture(args.ip_address, api_port=args.port)
 
 while True:
     # The .read() method works exactly like in OpenCV!

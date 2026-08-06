@@ -1,7 +1,7 @@
 import logging
 
 import requests
-from PyQt6.QtCore import QByteArray, QObject, pyqtSignal
+from PySide6.QtCore import QByteArray, QObject, Signal
 
 logger = logging.getLogger("MediaFetcher")
 
@@ -12,11 +12,11 @@ class MediaFetcher(QObject):
     """
 
     # Signal emitted when the media content has been successfully fetched.
-    media_fetched = pyqtSignal(QByteArray)
+    media_fetched = Signal(QByteArray)
     # Signal emitted if an error occurs during fetching.
-    error_occurred = pyqtSignal(str)
+    error_occurred = Signal(str)
     # Signal to indicate the worker has finished its job.
-    finished = pyqtSignal()
+    finished = Signal()
 
     def __init__(self, url: str):
         super().__init__()

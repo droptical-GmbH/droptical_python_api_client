@@ -5,7 +5,6 @@ See LICENSE in this folder for the full text.
 
 Third-Party Components (test-only):
 - pytest — MIT — https://github.com/pytest-dev/pytest
-- Flask — BSD-3-Clause — https://github.com/pallets/flask
 - Plus all “base” dependencies — see ../COPYRIGHT
 
 Notes:

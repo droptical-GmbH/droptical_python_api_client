@@ -7,16 +7,6 @@
 
 - Source: https://github.com/pytest-dev/pytest
 
-### Flask
-
-- License: BSD-3-Clause
-
-- Copyright notice:
-  > Copyright 2010 Pallets
-
-- Source: https://github.com/pallets/flask
-
-
 ### requests
 
 - License: Apache-2.0

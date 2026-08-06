@@ -2,336 +2,320 @@
 
 ## Overview
 
-This repository contains a Python client for interacting with the droptical Analysis Unit. The library provides a high-level   interface for controlling the device via its HTTP API and for consuming its high-performance TCP video stream.
+A Python client for the droptical Analysis Unit. It provides a high-level interface for
+controlling the device through its **v2 REST API** (`/api/v2`) and for consuming its
+high-performance **TCP video stream**.
 
 The project includes:
 
-  * `src/droptical_api_client/client.py`: The core API module containing the main client classes.
-  * `src/droptical_api_client/models.py`: Pydantic models that ensure type-safe communication with the device's API.
-  * A set of custom exceptions for predictable error handling.
-  * A convenience wrapper to make the video stream compatible with OpenCV's `VideoCapture` interface.
-  * A mock server for development and testing.
-  * Multiple example applications (`cv2`, `PyQt6`, etc.).
+  * `src/droptical_api_client/client.py`: the core client classes and HTTP transport.
+  * `src/droptical_api_client/models.py`: Pydantic models mirroring the v2 API contract.
+  * A clear hierarchy of custom exceptions for predictable error handling.
+  * A convenience wrapper that makes the video stream compatible with OpenCV's `VideoCapture`.
+  * Example applications (`general`, `cv2`, `gui`).
+  * An integration test suite that runs against a live device/backend (no bundled mock).
+
+> **Versioning:** this client tracks the device's OpenAPI specification 1:1. Client
+> **2.0.0** targets **OpenAPI 2.0.0** (the RESTful `/api/v2` surface). The previous
+> command-based API (`POST /api/control`) is no longer used.
 
 ## Features
 
-  * **Dual API Interface**: Separate, optimized channels for device control (HTTP REST) and data streaming (TCP).
-  * **Comprehensive Command Support**: Full coverage of the device's API, from reading settings to triggering actions and managing presets.
-  * **Type-Safe Communication**: Leverages Pydantic models for request and response validation, reducing runtime errors.
-  * **High-Performance Streaming**: A multi-threaded TCP client designed to handle high-throughput video streams with various compression codecs (LZ4, ZSTD, Zlib).
-  * **Convenience Helpers**:
-      * The `Frame` dataclass includes methods to instantly convert raw image data to Pillow (`PIL`) or NumPy (`OpenCV`) formats.
-      * The `dropticalAPIClientCapture` class provides a familiar `cv2.VideoCapture`-like interface for easy integration.
-  * **Robust Error Handling**: A clear hierarchy of custom exceptions (`DeviceConnectionError`, `DeviceCommandError`, `StreamDisconnectedError`) allows for fine-grained error management.
+  * **REST + TCP**: a RESTful control API (`/api/v2`) plus a low-latency TCP video stream.
+  * **Type-safe models**: Pydantic models for every request/response, validated strictly against
+    the API contract — an unexpected field fails loudly, signalling the client is out of date with
+    the device rather than silently dropping data.
+  * **Cursor pagination**: list endpoints (measurements, frames, jobs) use keyset cursors;
+    `iter_*()` helpers walk all pages automatically.
+  * **High-performance streaming**: a multi-threaded TCP client handling LZ4 / ZSTD / Zlib
+    codecs, with `ImageFrame` → Pillow / NumPy(OpenCV) conversion helpers.
+  * **Robust errors**: a typed exception hierarchy (`ValidationError`, `NotIdleError`,
+    `NotFoundError`, `ConflictError`, `DeviceConnectionError`, …).
 
 ## Prerequisites
 
   * Python 3.10 or newer
-  * `pip` and `venv` (usually included with Python)
+  * `pip` and `venv`
 
 ## Installation
 
-1.  **Clone the Repository**
-
-    ```bash
-    git clone git@github.com:droptical-GmbH/droptical_python_api_client.git
-    cd git@github.com:droptical-GmbH/droptical_python_api_client.git
-    ```
-
-2.  **Create and Activate a Virtual Environment**
-    Using a virtual environment is strongly recommended.
-
-      * On macOS / Linux:
-        ```bash
-        python3 -m venv .venv
-        source .venv/bin/activate
-        ```
-      * On Windows:
-        ```bash
-        python -m venv .venv
-        .\.venv\Scripts\activate
-        ```
-
-3.  **Install Dependencies**
-    This project uses `pyproject.toml` to manage dependencies. Install the package from your local clone using `pip`.
-
-    **Core Installation (minimal):**
-    Installs only the essential packages for API control (e.g., `requests`).
-    ```bash
-    pip install .
-    ```
-
-    **Installation with Optional Features:**
-    You can install optional features by specifying "extras". You can combine them as needed.
-
-    *   **Image Processing (`image`):** For converting frames to Pillow formats.
-        ```bash
-        pip install '.[image]'
-        ```
-    *   **All Stream Codecs (`stream`):** Adds support for all compression algorithms (LZ4, ZSTD).
-        ```bash
-        pip install '.[stream]'
-        ```
-    *   **OpenCV Wrapper (`opencv`):** For the `cv2.VideoCapture`-like interface. Requires `image`.
-        ```bash
-        pip install '.[image,opencv]'
-        ```
-    *   **GUI Example (`gui`):** For running and building the PyQt6 GUI example.
-        ```bash
-        pip install '.[stream,gui]'
-        ```
-
-    **Full Installation (for running all examples):**
-    To install everything needed to run all examples and use all features:
-    ```bash
-    pip install '.[image,stream,opencv,gui]'
-    ```
-
-## Getting Started: Running the Mock Server & Examples
-
-To test the client without a physical device, you can use the included mock server. The examples are pre-configured to connect to this server.
-
-The process involves two steps: running the server in one terminal, and running a client example in another.
-
-### Step 1: Start the Mock Server
-
-The mock server simulates the device's API and video stream. Open a terminal, activate the virtual environment, and run the following command from the project's root directory:
-
 ```bash
-# Make sure your virtual environment is activated
-python -m tests.mock_server
+git clone git@github.com:droptical-GmbH/droptical_python_api_client.git
+cd droptical_python_api_client
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .\.venv\Scripts\activate
+pip install .
 ```
 
-The server will start and print its configuration. It listens on `127.0.0.1`. You can customize the stream with command-line arguments (e.g., `--fps 60`, `--algo ZSTD`). Leave this terminal window open.
+**Optional extras** (combine as needed):
 
-### Step 2: Run an Example Client
-
-Now, **open a second terminal window**, activate the same virtual environment, and run one of the client examples.
-
-The command-line examples accept the device's IP address as an argument. **If you don't provide one, they will default to `127.0.0.1`** to connect to the mock server automatically.
-
-#### Option A: Simple OpenCV Client (`cv2_capture_example`)
-
-This example uses the `dropticalAPIClientCapture` wrapper for a simple OpenCV loop.
-
-```bash
-# To connect to the mock server (uses default 127.0.0.1)
-python -m examples.cv2.cv2_capture_example
-
-# To connect to a real device at a specific IP
-python -m examples.cv2.cv2_capture_example 192.168.1.100
-```
-
-#### Option B: Live Stream Console Client (`live_stream_example`)
-
-This example demonstrates the core `streaming_session` and prints frame info to the console.
+| Extra | Adds | Use for |
+|---|---|---|
+| `image` | Pillow | `ImageFrame.to_pil_image()` / `ImageFrame.save()` |
+| `stream` | lz4, zstandard | LZ4 / ZSTD stream decompression |
+| `opencv` | opencv-python | `ImageFrame.to_numpy_array()`, `dropticalImageStreamCapture` |
+| `events` | websocket-client | `event_stream()` — realtime Reverb/Pusher events |
+| `gui` | PySide6, pyinstaller | the PySide6 GUI example (LGPL — app stays MIT) |
+| `test` | pytest | running the test suite (against a live backend) |
 
 ```bash
-# To connect to the mock server (uses default 127.0.0.1)
-python -m examples.general.live_stream_example
-
-# To connect to a real device at a specific IP
-python -m examples.general.live_stream_example 192.168.1.100
+pip install '.[image,stream,opencv]'      # everything the HTTP+stream client needs
+pip install '.[test]'                      # to run the test suite (integration tests, see tests/)
 ```
 
-#### Option C: Full-Featured GUI Client
+> **License note:** the core library and all extras are permissive-friendly. The optional
+> **`gui`** extra pulls in **PySide6/shiboken6 (LGPL-3.0)** and PyInstaller; LGPL keeps the
+> example's own code MIT and only asks that the bundled Qt libraries stay replaceable (use a
+> PyInstaller one-folder build when distributing). The `gui` extra is not needed to use the client.
 
-This example is a more complex application built with PyQt6. It does not take command-line arguments; you enter the IP address directly into the GUI window.
+## Getting started: examples
+
+The command-line examples take an optional `IP [PORT]` (default `127.0.0.1 80`) and run against a
+droptical device (or any reachable test backend). Point them at your device:
 
 ```bash
-# In your second terminal (with .venv activated)
-python -m examples.gui.main
+python -m examples.general.rest_example 192.168.1.100 80   # REST tour
+python -m examples.general.live_stream_example 192.168.1.100 80   # console live stream
+python -m examples.general.events_example 192.168.1.100 80        # realtime events (needs [events])
+python -m examples.cv2.cv2_capture_example 192.168.1.100 80       # OpenCV window
 ```
+
+> **Testing:** the test suite (`tests/`) runs as integration tests against a live device or test
+> backend — point it with `DROPTICAL_TEST_HOST` / `DROPTICAL_TEST_PORT` (default `127.0.0.1:80`);
+> it skips if none is reachable. The pure model/parsing tests in `tests/test_models.py` need no
+> backend. No device mock is bundled with the client.
 
 -----
 
-## API Documentation & Usage
+## Usage
 
-The library offers two primary ways to interact with the device, catering to different use cases.
-
-1.  **`dropticalAPIClient`**: The main class for full control over all device functions.
-2.  **`dropticalAPIClientCapture`**: A simplified, OpenCV-style wrapper for easily grabbing video frames.
-
-### 1\. The `dropticalAPIClient` Class (Full Control)
-
-This is the core class for sending commands and managing the device.
-
-#### 1.1. Connecting to the Device
-
-First, instantiate the class and connect it to the device's IP address.
+### Connecting
 
 ```python
-from droptical_api_client import dropticalAPIClient, DeviceConnectionError, MachineInfo
+from droptical_api_client import dropticalAPIClient, DeviceConnectionError
 
 api = dropticalAPIClient()
+api.connect("192.168.1.100")          # api_port defaults to 80
+
 try:
-    api.connect("192.168.1.100") # Use the device's IP address
-    info: MachineInfo = api.get_machine_info()
-    # Note: hostname is in info.network, serial number is info.analysisunit.snr
-    print(f"Successfully connected to {info.network.hostname} (Serial: {info.analysisunit.snr})")
+    infos = api.get_infos()
+    print(infos.system.status, infos.cameraunit.type)
 except DeviceConnectionError as e:
     print(f"Connection failed: {e}")
 ```
 
-#### 1.2. HTTP Command Reference
+### Settings (`GET` / `PATCH /settings`)
 
-All methods that interact with the HTTP control API will raise a `DeviceCommandError` if the device reports a functional error.
-
-##### **Read-Only Methods**
-
-These methods retrieve settings or status information. They return Pydantic models for easy data access.
-
-  * `get_single_shot_settings() -> SingleShotSettings`: Retrieves settings for single measurements.
-  * `get_multi_shot_settings() -> MultiShotSettings`: Retrieves settings for multi-shot operations.
-  * `get_video_settings() -> VideoSettings`: Retrieves settings for video recordings.
-  * `get_all_settings() -> AllSettings`: Retrieves all device settings in a single call.
-  * `get_machine_info() -> MachineInfo`: Gets hardware, software, and network information.
-  * `get_preset_info() -> PresetInfo`: Gets information about the currently loaded preset.
-  * `get_gpio_levels() -> GpioLevels`: Reads the current state of General Purpose I/O pins.
-
-##### **Read/Write Properties**
-
-These Python properties provide a convenient way to get and set blocks of settings.
-
-  * `calculatory_settings`: Gets or sets calculation and image processing settings.
-    ```python
-    # Get
-    calc_settings = api.calculatory_settings
-    # Modify and set
-    calc_settings.blur_radius = 5
-    api.calculatory_settings = calc_settings
-    ```
-  * `camera_settings`: Gets or sets camera parameters like exposure, gain, and frame rate.
-  * `machine_settings`: Gets or sets general machine configuration.
-
-##### **Action Methods**
-
-These methods trigger a specific action on the device.
-
-  * `trigger_single_shot(settings: SingleShotSettings, ...) -> SingleShotResponse`: Executes a single measurement.
-  * `trigger_multi_shot(settings: MultiShotSettings, ...) -> MultiShotResponse`: Executes a multi-shot sequence.
-  * `trigger_video(settings: VideoSettings, ...) -> VideoResponse`: Records a video.
-
-##### **State-Changing & Simple Methods**
-
-These methods perform simple actions, typically without a payload.
-
-  * `reset_errors()`: Resets device errors.
-  * `reboot()`: Reboots the device.
-  * `shutdown()`: Shuts down the device.
-  * `power_on_camera()` / `power_off_camera()`: Controls camera power.
-  * `set_production_mode(enabled: bool)`: Enables or disables production mode.
-  * `set_streaming_mode(enabled: bool)`: Enables or disables the TCP video stream.
-
-##### **Preset Management**
-
-  * `list_presets(...) -> List[Preset]`: Returns a list of all available presets.
-  * `load_preset(gid: int, version: int)`: Loads a specific preset.
-  * `create_preset(name: str, ...) -> Preset`: Creates a new preset from the current settings.
-  * `create_preset_version(gid: int, ...) -> Preset`: Creates a new version of an existing preset.
-  * `edit_preset(preset_id: int, name: str, ...)`: Edits a preset's metadata.
-  * `delete_preset(preset_id: int)`: Marks a preset as deleted.
-
-##### **Destructive Operations**
-
-These operations permanently delete data. Use with caution.
-
-  * `factory_reset()`: **WARNING:** Resets all settings and data to factory defaults.
-  * `clear_data()`: **WARNING:** Deletes all measurement data and images.
-
-#### 1.3. TCP Video Streaming
-
-The TCP stream provides a low-latency feed of raw image frames. The recommended way to use it is with the `streaming_session` context manager, which handles starting and stopping the stream automatically.
-
-The stream yields `Frame` objects, which contain the image data and metadata.
+Settings are grouped into `camera`, `calculation`, `export`, `action`, `machine`, `rois`
+and `features`. `rois` and `features` are **1-based maps** (the key is the identity). Only a
+single ROI may be configured; each ROI holds `processing` / `nozzle` / `exclusion`
+rectangles plus the point-based `nozzleTip`.
 
 ```python
-from droptical_api_client import dropticalAPIClient, Frame
+from droptical_api_client import AllSettings, CameraSettings, CalculationSettings
+
+settings = api.get_settings()                       # full payload
+roi = settings.rois[1]
+print(roi.nozzle_tip.uz.u, roi.processing.uz.width)
+
+# Partial update — only send what you change:
+api.update_settings(AllSettings(camera=CameraSettings(flip_image=True)))
+api.update_settings({"calculation": {"fixedThreshold": 130}})   # dicts work too
+
+# Read only certain groups:
+cam = api.get_settings(groups=["camera"]).camera
+```
+
+Validation is enforced server-side: unknown keys, a second ROI, an out-of-bounds value or an
+exclusion outside the nozzle raise `ValidationError` (with a per-field `.errors` map);
+changing settings while the unit is busy raises `NotIdleError`.
+
+### Measurements
+
+```python
+from droptical_api_client import MeasurementType
+
+# Trigger (async by default; sync=True blocks until the measurement finishes)
+m = api.create_measurement(MeasurementType.SINGLESHOT, sync=True)
+# or the convenience wrappers:
+api.trigger_singleshot()
+api.trigger_multishot(sync=True)
+
+# Read / list (cursor pagination)
+one = api.get_measurement(m.id)
+page = api.list_measurements(per_page=50, status="done")
+for meas in api.iter_measurements(type="video"):    # walks every page
+    print(meas.id, meas.status)
+
+api.abort_measurement(m.id)
+api.delete_measurement(m.id)
+```
+
+### Frames
+
+```python
+frame = api.get_frame(42)                    # includes rois/results
+img_bytes = api.get_frame_image(42)          # image/jpeg|png bytes
+
+for f in api.iter_frames(measurement_id=7):  # global frame list, filtered
+    ...
+
+for f in api.iter_measurement_frames(7):     # frames scoped to a measurement
+    ...
+```
+
+### Machine actions, mode & GPIO
+
+```python
+api.reboot(); api.shutdown()
+api.reset_errors(); api.clear_messages()
+api.power_on_camera(); api.power_off_camera()
+api.set_lab_mode()
+api.set_production_mode(True)                 # False → lab mode
+# ⚠️ irreversible + device-scoped: pass the TARGET device's analysis-unit serial number
+# (api.get_infos().analysisunit.serial_number) as a confirmation. It guards against wiping the
+# WRONG unit in a multi-device setup — not access control. Pass the serial you *expect* rather
+# than reading it back from the device you're about to wipe, or the safeguard is moot; a
+# missing/mismatching value is rejected with HTTP 422 (ValidationError).
+api.factory_reset(confirm_serial="SN-AU-1234")   # ⚠️ resets to defaults
+api.clear_data(confirm_serial="SN-AU-1234")      # ⚠️ deletes measurement data
+
+levels = api.get_gpio_levels()                # {gpi: {...}, gpo: {...}}
+api.set_gpo("GPO1", True)                     # name must be GPO1..GPO5
+```
+
+### Presets
+
+```python
+presets = api.list_presets(include_deleted=False, sort_by="id", direction="desc")
+p = api.create_preset("Recipe A", comment="…")
+api.edit_preset(p.id, name="Recipe A2")
+api.create_preset_version(p.id)
+api.load_preset(gid=p.gid, version=1)
+api.delete_preset(p.id)
+```
+
+### Exports & jobs
+
+```python
+# Direct (streamed) download — returns zip bytes:
+data = api.download_measurement(7, format="csv", config_name="excel_global")
+
+# Queued export job (for large sets):
+job = api.create_measurement_export(7, format="json")
+print(job.status)                             # "queued"
+job = api.get_job(job.id)
+api.abort_job(job.id, force=False)
+for j in api.iter_jobs():
+    ...
+```
+
+### Error handling
+
+All API errors derive from `ApiError` (itself a `DeviceError`):
+
+| Exception | HTTP | Meaning |
+|---|---|---|
+| `ValidationError` | 422 | request failed validation — see `.errors` |
+| `NotIdleError` | 423 | settings changed while the unit is not idle |
+| `NotFoundError` | 404 | resource does not exist |
+| `ConflictError` | 409 | conflicts with current state (e.g. active job) |
+| `DeviceCommandError` | 5xx | the device reported a functional error |
+| `DeviceConnectionError` | — | the device could not be reached (transport) |
+
+```python
+from droptical_api_client import ValidationError, NotIdleError
+
+try:
+    api.update_settings({"calculation": {"fixedThreshold": 9999}})
+except ValidationError as e:
+    print(e.status_code, e.errors)            # {'rois.1...': ['...'], ...}
+except NotIdleError:
+    print("Unit is busy — cannot change settings right now.")
+```
+
+### TCP video streaming
+
+The binary TCP stream is independent of the REST API; the recommended entry point is the
+`image_stream_session` context manager, which starts and stops the stream for you. The image
+stream is mode-independent and `image_stream_session` does **not** change the device mode, so put
+the device in a suitable mode first (e.g. `api.set_streaming_mode()`); in lab/production each
+frame additionally carries its measurement values in `frame.metadata`.
+
+```python
 import cv2
+from droptical_api_client import dropticalAPIClient
 
 api = dropticalAPIClient()
 api.connect("192.168.1.100")
+api.set_streaming_mode()  # or set_lab_mode() / set_production_mode(); the stream no longer sets this
 
-# The streaming_session context manager ensures the stream is properly closed
-with api.streaming_session() as frame_generator:
-    print("Streaming started. Press 'q' to quit.")
-    for frame in frame_generator:
-        print(f"Received Frame ID: {frame.id}, Latency: {frame.latency_ms:.2f} ms")
-
-        # Convert to an OpenCV-compatible format (BGR)
-        cv_image = frame.to_numpy_array(bgr=True)
-
-        cv2.imshow("Live Stream", cv_image)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+with api.image_stream_session() as frames:
+    for frame in frames:
+        print(f"ImageFrame {frame.index}  latency {frame.latency_ms:.1f} ms  {frame.width}x{frame.height}")
+        cv2.imshow("Live", frame.to_numpy_array(bgr=True))
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
-
 cv2.destroyAllWindows()
-print("Stream stopped.")
 ```
 
-##### **The `Frame` Dataclass**
+`api.capture_frames(count)` grabs a fixed number of frames as a blocking burst.
 
-Each object yielded by the stream is an instance of `Frame`, which has the following useful attributes and methods:
+**The `ImageFrame` dataclass** (a live stream image — distinct from the REST `MeasurementFrame`
+resource): `index` (frame index since connection start), `server_timestamp`,
+`reception_timestamp`, `width`, `height`, `compression`, `color_mode`, `bit_depth`, `raw_data`,
+and `metadata` (a `ValueMessage` with the frame's measurement results in lab/production mode,
+or `None` in plain streaming mode); plus `latency_ms`, `to_pil_image()`,
+`to_numpy_array(bgr=True)`, `save(path_template)`.
 
-  * **Attributes**:
-      * `id: int`: Unique frame counter.
-      * `server_timestamp: datetime`: Timestamp when the frame was captured on the device.
-      * `reception_timestamp: datetime`: Timestamp when the frame was received by the client.
-      * `width: int`, `height: int`: Dimensions of the image.
-      * `compression: CompressionAlgorithm`: The compression format used (e.g., `LZ4`, `ZSTD`).
-      * `color_mode: ColorMode`: `GRAYSCALE` or `RGB`.
-      * `raw_data: bytes`: The decompressed, raw image pixel data.
-  * **Properties & Methods**:
-      * `latency_ms: float`: Calculates the network latency for the frame.
-      * `to_pil_image() -> PIL.Image`: Converts the frame to a Pillow Image object.
-      * `to_numpy_array(bgr: bool = True) -> numpy.ndarray`: Converts the frame to a NumPy array. By default, it returns a BGR image suitable for OpenCV.
-      * `save(path_template: str)`: Saves the frame to a file.
+**The value stream** (`api.value_stream()` / `api.value_stream_session()`, port 51223) is a
+second, independent connection that yields `ValueMessage` documents (measurement results as
+JSON) whenever a measurement is triggered — no image data. Its schema is the same as a
+`ImageFrame.metadata`.
 
-### 2\. The `dropticalAPIClientCapture` Class (OpenCV-Style)
+### Realtime events (WebSocket)
 
-This class is a convenience wrapper that makes the `dropticalAPIClient` stream behave like OpenCV's `cv2.VideoCapture`. It is perfect for quick integrations or applications already built around OpenCV's capture loop.
-
-It handles connecting, starting the stream, and fetching frames in a background thread.
+`api.event_stream()` / `api.event_stream_session()` subscribe to the device's realtime event
+channel (a Reverb/Pusher WebSocket on port 8080) and yield `BroadcastEvent` objects. These are
+**notifications** — when one arrives, treat the matching REST endpoint as the source of truth.
+Requires the optional dependency: `pip install droptical-api-client[events]` (websocket-client,
+Apache-2.0).
 
 ```python
-from droptical_api_client import dropticalAPIClientCapture
-import cv2
+from droptical_api_client import dropticalAPIClient, MeasurementUpdatedEvent
 
-IP_ADDRESS = "192.168.1.100"
+api = dropticalAPIClient()
+api.connect("192.168.1.100")  # REST host; the event stream uses port 8080 automatically
 
-# The 'with' statement ensures release() is called automatically
-with dropticalAPIClientCapture(IP_ADDRESS) as cap:
-    if not cap.isOpened():
-        print("Error: Could not open video stream.")
-        exit()
-
-    while True:
-        # read() mimics the cv2.VideoCapture.read() method
-        ret, frame = cap.read()
-
-        if not ret:
-            print("Stream ended or an error occurred.")
-            break
-
-        cv2.imshow('droptical Stream', frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-cv2.destroyAllWindows()
+with api.event_stream_session() as events:          # default channels: infos, measurement, exports, presets, settings
+    for event in events:
+        print(event.channel, event.event, event.data)
+        payload = event.typed()                      # parsed model, or None for unmodeled events
+        if isinstance(payload, MeasurementUpdatedEvent) and payload.status_changed:
+            print("measurement", payload.measurement_id, "->", payload.measurement.status)
 ```
 
-#### **Class Methods**
+Each `BroadcastEvent` carries `channel`, `event` (the wire name, e.g. `updated`, `changed`),
+and the raw `data` dict (snake_case, matching the REST API). `event.typed()` returns the
+matching model — `MachineStatusEvent`, `MeasurementUpdatedEvent`, `ExportProgressEvent`,
+`PresetsChangedEvent`, or `SettingsUpdatedEvent` — or `None` for an event this client version does
+not model (unknown events still surface as raw `data`). The stream runs on its own thread and, with `reconnect=True`
+(default), transparently re-subscribes after a connection drop. The customer app key
+(`strobe-events-public`) is fixed fleet-wide and applied by default; pass `app_key=`/`port=` to
+override. Call `api.stop_event_stream()` (or leave the `event_stream_session` context) to stop.
 
-  * `__init__(ip_address: str, ...)`: Creates the object and connects to the device.
-  * `read() -> tuple[bool, numpy.ndarray | None]`: Reads the next available frame. Returns a boolean (`True` on success) and the frame as a BGR NumPy array.
-  * `isOpened() -> bool`: Returns `True` if the stream is active and frames can be read.
-  * `release()`: Stops the stream and cleans up resources.
+### OpenCV-style capture wrapper
 
-### 3\. Error Handling
+```python
+from droptical_api_client import dropticalImageStreamCapture
+import cv2
 
-The library uses custom exceptions to signal specific problems:
-
-  * `DeviceConnectionError`: Raised for network-level issues, such as being unable to connect to the device's HTTP or TCP port.
-  * `DeviceCommandError`: Raised when the device's API returns a specific error for a command (e.g., invalid parameters). The `details` attribute may contain extra information from the device.
-  * `StreamDisconnectedError`: Raised when the TCP video stream is unexpectedly closed by the server.
+with dropticalImageStreamCapture("192.168.1.100") as cap:
+    while cap.isOpened():
+        ret, frame = cap.read()               # frame is a BGR NumPy array
+        if not ret:
+            break
+        cv2.imshow("droptical", frame)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+cv2.destroyAllWindows()
+```

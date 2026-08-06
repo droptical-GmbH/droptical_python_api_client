@@ -1,7 +1,7 @@
 import logging
 
-from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
-from PyQt6.QtGui import QImage
+from PySide6.QtCore import QObject, QRunnable, Signal
+from PySide6.QtGui import QImage
 
 logger = logging.getLogger("FrameSaver")
 
@@ -11,14 +11,14 @@ class FrameSaverSignals(QObject):
     Defines the signals available from a FrameSaver task.
     """
 
-    error = pyqtSignal(str)
-    finished = pyqtSignal()
+    error = Signal(str)
+    finished = Signal()
 
 
 class FrameSaver(QRunnable):
     """
     A QRunnable task to save an image to a file in a separate thread.
-    This version is more efficient as it saves the QImage directly.
+    Saves the QImage directly on a worker thread.
     """
 
     def __init__(self, raw_data: bytes, width: int, height: int, img_format: QImage.Format, file_path: str):

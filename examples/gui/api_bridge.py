@@ -1,22 +1,22 @@
 import logging
 import time
 
-from pydantic import ValidationError
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QImage
+from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtGui import QImage
 
 from droptical_api_client import (
     AllSettings,
-    BaseApiModel,
+    ApiError,
     BitDepth,
     ColorMode,
     CompressionAlgorithm,
     DeviceError,
-    Frame,
-    MachineInfo,
-    MultiShotSettings,
-    SingleShotSettings,
-    VideoSettings,
+    ImageFrame,
+    Infos,
+    Measurement,
+    MeasurementFrame,
+    MeasurementStatus,
+    MeasurementType,
     dropticalAPIClient,
 )
 
@@ -24,74 +24,87 @@ logger = logging.getLogger("GuiApiBridge")
 
 
 class GuiApiBridge(QObject):
-    """
-    A bridge between the dropticalAPIClient and the PyQt GUI.
+    """Bridge between the v2 ``dropticalAPIClient`` and the PyQt GUI.
 
-    This class handles communication between the device API, which may perform
-    long-running tasks, and the GUI's event loop. It translates API responses
-    and streaming data into Qt signals, allowing it to run safely in a
-    separate QThread without blocking the user interface.
+    Long-running API calls run in a worker QThread and results are delivered as
+    Qt signals so the GUI event loop stays responsive.
     """
+
+    # Upper bound on frames listed + detail-fetched (with results) after a measurement,
+    # to avoid a request storm on very large captures.
+    FRAME_DISPLAY_LIMIT = 50
 
     # Signal emits a thread-safe QImage for display and raw bytes for saving.
-    new_frame_signal = pyqtSignal(
+    new_frame_signal = Signal(
         QImage,  # image_for_display
         bytes,  # raw_data_for_saving
-        int,  # id1
-        int,  # id2
-        int,  # id3
+        int,  # index
         str,  # timestamp
         int,  # width
         int,  # height
         CompressionAlgorithm,
         ColorMode,
         BitDepth,
+        object,  # frame.metadata: a ValueMessage with per-frame results, or None
     )
-    fps_update_signal = pyqtSignal(float)
-    production_mode_conflict = pyqtSignal()
+    fps_update_signal = Signal(float)
+    production_mode_conflict = Signal()
 
-    control_action_finished_signal = pyqtSignal(str, BaseApiModel)
+    # v2: a trigger returns a Measurement (id/status) rather than inline drops.
+    # We emit (action_type, Measurement, list[MeasurementFrame]) — the frames are
+    # fetched after the measurement completes so the UI can show images/results.
+    control_action_finished_signal = Signal(str, object, object)
 
-    status_update_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal()
-    critical_error_signal = pyqtSignal(str, str)
-    connection_successful_signal = pyqtSignal(MachineInfo, AllSettings)
-    handshake_finished_signal = pyqtSignal()
+    status_update_signal = Signal(str)
+    finished_signal = Signal()
+    critical_error_signal = Signal(str, str)
+    connection_successful_signal = Signal(Infos, AllSettings, object)  # object = list[Feature]
+    handshake_finished_signal = Signal()
 
-    def __init__(self, ip_address: str):
+    def __init__(self, ip_address: str, api_port: int = 80):
         super().__init__()
         self.api = dropticalAPIClient()
-        self.api.connect(ip_address)
-        logger.info(f"GuiApiBridge initialized for IP {ip_address}.")
+        self.api.connect(ip_address, api_port=api_port)
+        self._ip_address = ip_address
+        logger.info(f"GuiApiBridge initialized for {ip_address}:{api_port}.")
 
         self._is_cancelled = False
         self._frame_counter = 0
         self._fps_last_time = 0.0
         self.FPS_UPDATE_INTERVAL_SECONDS = 1.0
 
-    @pyqtSlot()
+    @Slot()
     def cancel_action(self) -> None:
         """Sets the cancellation flag to stop any ongoing API operation."""
         logger.info("Cancellation requested by user.")
         self._is_cancelled = True
-        self.api.stop_stream()
+        self.api.stop_image_stream()
 
     def run_connection_handshake(self) -> None:
-        """
-        Connects to the device, fetches initial info and all settings.
-        Emits signals based on success or failure.
-        """
+        """Fetches initial infos and settings; emits success/failure signals."""
         logger.info("Starting connection handshake in worker thread...")
         self._is_cancelled = False
         try:
-            machine_info = self.api.get_machine_info()
-            # all_settings = self.api.get_all_settings() TODO: Needs to be implemented in cpp-backend
-            all_settings = AllSettings.default()
+            infos = self.api.get_infos()
+            try:
+                all_settings = self.api.get_settings()
+            except (DeviceError, ApiError) as e:
+                # Some firmware may not implement the composite settings read yet;
+                # fall back to built-in defaults so the UI can still populate.
+                logger.warning(f"Could not read settings, using defaults: {e}")
+                all_settings = AllSettings.default()
+            try:
+                features = self.api.get_features()
+            except (DeviceError, ApiError) as e:
+                # Older firmware may not expose the feature catalogue; the UI then falls
+                # back to showing raw featureIds.
+                logger.warning(f"Could not read feature catalogue: {e}")
+                features = []
             if not self._is_cancelled:
-                self.connection_successful_signal.emit(machine_info, all_settings)
-        except (DeviceError, ValidationError) as e:
+                self.connection_successful_signal.emit(infos, all_settings, features)
+        except DeviceError as e:
             logger.error(f"Connection handshake failed: {e}", exc_info=True)
-            self.critical_error_signal.emit("Connection Failed", f"Could not retrieve initial device data. The device response might be invalid or incomplete.\n\nDetails: {e}")
+            self.critical_error_signal.emit("Connection Failed", f"Could not retrieve initial device data.\n\nDetails: {e}")
         except Exception as e:
             logger.error(f"An unexpected error occurred during connection handshake: {e}", exc_info=True)
             self.critical_error_signal.emit("Unexpected Error", f"An unexpected error occurred during connection.\n\nDetails: {e}")
@@ -100,22 +113,17 @@ class GuiApiBridge(QObject):
             self.finished_signal.emit()
 
     def start_raw_stream_sequence(self) -> None:
-        """
-        Initiates the streaming sequence and checks for production mode.
-
-        This method performs an initial handshake with the device to determine if
-        it's in production mode, which may conflict with streaming. It then
-        calls `resolve_conflict_and_continue` to handle the streaming loop.
-        """
+        """Starts streaming, first checking whether the unit is in production mode."""
         logger.info("Starting stream sequence in worker thread...")
         self._is_cancelled = False
         try:
-            info = self.api.get_machine_info()
+            infos = self.api.get_infos()
             if self._is_cancelled:
                 self.finished_signal.emit()
                 return
 
-            if info.analysisunit.production_mode:
+            in_production = bool(infos.system and infos.system.mode == "production")
+            if in_production:
                 self.production_mode_conflict.emit()
             else:
                 self.resolve_conflict_and_continue(deactivate_production=False)
@@ -127,12 +135,7 @@ class GuiApiBridge(QObject):
             self.handshake_finished_signal.emit()
 
     def resolve_conflict_and_continue(self, deactivate_production: bool) -> None:
-        """
-        The main worker loop for processing a raw video stream.
-
-        This method connects to the stream, processes incoming frames, and
-        emits signals for each new frame and for FPS updates.
-        """
+        """Main worker loop for the raw video stream."""
         logger.info(f"Resolving stream conflict. Deactivating production: {deactivate_production}")
         try:
             if deactivate_production:
@@ -140,9 +143,9 @@ class GuiApiBridge(QObject):
 
             self._frame_counter = 0
             self._fps_last_time = time.time()
-            self.status_update_signal.emit(f"Connecting to stream at {self.api._ip_address}...")
+            self.status_update_signal.emit(f"Connecting to stream at {self._ip_address}...")
 
-            with self.api.streaming_session() as frame_stream:
+            with self.api.image_stream_session() as frame_stream:
                 self.status_update_signal.emit("Stream connected successfully.")
                 self.handshake_finished_signal.emit()
                 for frame in frame_stream:
@@ -166,28 +169,15 @@ class GuiApiBridge(QObject):
             self.finished_signal.emit()
 
     def stop_raw_stream_sequence(self) -> None:
-        """
-        Requests the raw video stream to stop.
-
-        This method is a wrapper around `cancel_action` and is primarily
-        used to halt an active stream.
-        """
+        """Requests the raw video stream to stop."""
         self.cancel_action()
 
-    def _frame_handler(self, frame: Frame) -> None:
-        """
-        Processes a single frame, creates a QImage, calculates FPS, and emits the data.
-
-        This method is called for each frame received from the stream generator.
-        It creates a QImage in this worker thread to offload the GUI thread.
-        It emits `new_frame_signal` with both the QImage and the original raw
-        data, and periodically emits `fps_update_signal`.
-        """
+    def _frame_handler(self, frame: ImageFrame) -> None:
+        """Turns a stream ImageFrame into a QImage and emits it (runs in the worker thread)."""
         q_image_format = QImage.Format.Format_Grayscale8 if frame.color_mode == ColorMode.GRAYSCALE else QImage.Format.Format_RGB888
 
         bytes_per_pixel = 1 if frame.color_mode == ColorMode.GRAYSCALE else 3
         unpadded_row_size = frame.width * bytes_per_pixel
-
         bytes_per_line = unpadded_row_size
 
         actual_data_size = len(frame.raw_data)
@@ -195,23 +185,19 @@ class GuiApiBridge(QObject):
         if actual_data_size > expected_unpadded_size and actual_data_size % frame.height == 0:
             bytes_per_line = actual_data_size // frame.height
 
-        # The QImage constructor that takes a `bytes` object is smart enough to
-        # manage the memory, but to be explicitly thread-safe, we create a copy.
-        # This ensures the image data is independent of the network buffer.
         image_for_display = QImage(frame.raw_data, frame.width, frame.height, bytes_per_line, q_image_format).copy()
 
         self.new_frame_signal.emit(
             image_for_display,
             frame.raw_data,
-            frame.id1,
-            frame.id2,
-            frame.id3,
+            frame.index,
             frame.server_timestamp.isoformat(),
             frame.width,
             frame.height,
             frame.compression,
             frame.color_mode,
             frame.bit_depth,
+            frame.metadata,
         )
 
         self._frame_counter += 1
@@ -222,68 +208,113 @@ class GuiApiBridge(QObject):
             self.fps_update_signal.emit(fps)
             self._frame_counter, self._fps_last_time = 0, now
 
-    def run_single_shot(self, settings: SingleShotSettings, save_to_db: bool) -> None:
-        """
-        Worker method to execute a single shot action.
+    # --- Measurement triggers (v2) --------------------------------------
+    #
+    # v2 measurements are ALWAYS asynchronous: creating one returns immediately
+    # (HTTP 202) with a non-terminal status, and the device fills in frames and
+    # attachments (stitched image / video) only once it finishes. The flow is
+    # therefore: PATCH the (action) settings → create the measurement (async) →
+    # poll until it reaches a terminal status → re-fetch it so the attachments
+    # block is populated → read the resulting frames. v2 always persists the
+    # measurement as a record, so there is no "save to database" option.
 
-        It triggers a single shot using the API and emits a signal upon
-        completion with the result.
-        """
+    def _emit_measurement_progress(self, measurement: Measurement) -> None:
+        """Poll callback → surface live status/progress on the status bar."""
+        pct = f" ({measurement.progress}%)" if measurement.progress is not None else ""
+        self.status_update_signal.emit(f"Measurement #{measurement.id}: {measurement.status}{pct}")
+
+    def _run_measurement(self, action_type: str, mtype: MeasurementType, settings: AllSettings, sync: bool = False) -> None:
+        self._is_cancelled = False
+        try:
+            self.api.update_settings(settings)
+
+            # sync=True blocks the create call until the measurement is terminal (used for an
+            # internal-trigger single shot, which fires immediately); async returns at once and
+            # we poll below (needed for an external trigger that may wait for its signal).
+            measurement = self.api.create_measurement(mtype, sync=sync)
+            self.status_update_signal.emit(f"Measurement #{measurement.id} started ({mtype.value})…")
+
+            if not sync:
+                # Block this worker thread until the measurement is terminal. timeout=None
+                # (video can run long); the user can Cancel, which trips should_abort.
+                measurement = self.api.wait_for_measurement(
+                    measurement.id,
+                    timeout=None,
+                    poll_interval=0.4,
+                    on_poll=self._emit_measurement_progress,
+                    should_abort=lambda: self._is_cancelled,
+                )
+
+            if self._is_cancelled:
+                logger.info("Measurement cancelled by user; aborting on device.")
+                try:
+                    self.api.abort_measurement(measurement.id)
+                except DeviceError as e:
+                    logger.warning(f"Could not abort measurement {measurement.id}: {e}")
+                return
+
+            # Re-fetch via GET /measurements/{id}: only that endpoint loads the
+            # attachments block (stitched image / video download URLs).
+            measurement = self.api.get_measurement(measurement.id)
+
+            # A sync call can return before the measurement is terminal (the server-side wait
+            # elapsed → HTTP 202): the machine is still running or awaiting its trigger, it does
+            # not give up. Treat that as "still running" — surface any frames captured so far and
+            # report the state, rather than raising it as a failure.
+            status = measurement.status
+            still_running = status in (
+                MeasurementStatus.WAITING.value,
+                MeasurementStatus.IN_PROGRESS.value,
+                MeasurementStatus.NO_TRIGGER_RECEIVED.value,
+            )
+
+            frames: list[MeasurementFrame] = []
+            if status == MeasurementStatus.DONE.value or still_running:
+                try:
+                    listed = self.api.list_measurement_frames(measurement.id, per_page=self.FRAME_DISPLAY_LIMIT).data
+                except DeviceError as e:
+                    logger.warning(f"Measurement {measurement.id} frames could not be read: {e}")
+                    listed = []
+                # The frame LIST omits per-frame results (rois); only the per-frame detail
+                # endpoint loads them. Fetch each frame's detail so the UI can show results
+                # (even for frames without a stored image). Bounded by FRAME_DISPLAY_LIMIT.
+                if listed:
+                    self.status_update_signal.emit(f"Loading results for {len(listed)} frame(s)…")
+                for f in listed:
+                    try:
+                        frames.append(self.api.get_measurement_frame(measurement.id, f.id))
+                    except DeviceError:
+                        frames.append(f)  # fall back to the list entry (image only, no results)
+
+            if still_running:
+                self.status_update_signal.emit(
+                    f"Measurement #{measurement.id} still running ({status}); "
+                    f"{len(frames)} frame(s) so far — it keeps running on the device (poll or cancel to stop)."
+                )
+            elif status != MeasurementStatus.DONE.value:
+                logger.warning(f"Measurement {measurement.id} ended non-successfully: {status}")
+
+            self.control_action_finished_signal.emit(action_type, measurement, frames)
+        except ApiError as e:
+            logger.error(f"{action_type} failed: {e}", exc_info=True)
+            self.critical_error_signal.emit(f"{action_type.replace('_', ' ').title()} Error", str(e))
+        except DeviceError as e:
+            logger.error(f"{action_type} failed: {e}", exc_info=True)
+            self.critical_error_signal.emit(f"{action_type.replace('_', ' ').title()} Error", str(e))
+        except Exception as e:
+            logger.error(f"Unexpected error during {action_type}: {e}", exc_info=True)
+            self.critical_error_signal.emit("Unexpected Error", str(e))
+        finally:
+            self.finished_signal.emit()
+
+    def run_single_shot(self, settings: AllSettings, sync: bool = False) -> None:
         logger.info("Executing single shot in worker thread...")
-        self._is_cancelled = False
-        try:
-            response = self.api.trigger_single_shot(settings, save_to_database=save_to_db)
-            if not self._is_cancelled:
-                self.control_action_finished_signal.emit("single_shot", response)
-        except DeviceError as e:
-            logger.error(f"Single shot failed: {e}", exc_info=True)
-            self.critical_error_signal.emit("Single Shot Error", str(e))
-        except Exception as e:
-            logger.error(f"An unexpected error occurred during single shot: {e}", exc_info=True)
-            self.critical_error_signal.emit("Unexpected Error", str(e))
-        finally:
-            self.finished_signal.emit()
+        self._run_measurement("single_shot", MeasurementType.SINGLESHOT, settings, sync=sync)
 
-    def run_multi_shot(self, settings: MultiShotSettings, save_to_database: bool) -> None:
-        """
-        Worker method to execute a multi-shot action.
-
-        It triggers a multi shot using the API and emits a signal upon
-        completion with the result.
-        """
+    def run_multi_shot(self, settings: AllSettings, sync: bool = False) -> None:
         logger.info("Executing multi shot in worker thread...")
-        self._is_cancelled = False
-        try:
-            response = self.api.trigger_multi_shot(settings, save_to_database=save_to_database)
-            if not self._is_cancelled:
-                self.control_action_finished_signal.emit("multi_shot", response)
-        except DeviceError as e:
-            logger.error(f"Multi shot failed: {e}", exc_info=True)
-            self.critical_error_signal.emit("Multi Shot Error", str(e))
-        except Exception as e:
-            logger.error(f"An unexpected error occurred during multi shot: {e}", exc_info=True)
-            self.critical_error_signal.emit("Unexpected Error", str(e))
-        finally:
-            self.finished_signal.emit()
+        self._run_measurement("multi_shot", MeasurementType.MULTISHOT, settings, sync=sync)
 
-    def run_video(self, settings: VideoSettings, save_to_database: bool) -> None:
-        """
-        Worker method to execute a video capture action.
-
-        It triggers a video capture using the API and emits a signal upon
-        completion with the result.
-        """
+    def run_video(self, settings: AllSettings, sync: bool = False) -> None:
         logger.info("Executing video capture in worker thread...")
-        self._is_cancelled = False
-        try:
-            response = self.api.trigger_video(settings, save_to_database=save_to_database)
-            if not self._is_cancelled:
-                self.control_action_finished_signal.emit("video", response)
-        except DeviceError as e:
-            logger.error(f"Video capture failed: {e}", exc_info=True)
-            self.critical_error_signal.emit("Video Error", str(e))
-        except Exception as e:
-            logger.error(f"An unexpected error occurred during video capture: {e}", exc_info=True)
-            self.critical_error_signal.emit("Unexpected Error", str(e))
-        finally:
-            self.finished_signal.emit()
+        self._run_measurement("video", MeasurementType.VIDEO, settings, sync=sync)
