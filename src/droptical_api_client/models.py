@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, ClassVar, Generic, TypeVar
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 # =============================================================================
@@ -135,6 +135,7 @@ class CameraUnitType(str, Enum):
     NSXD = "nsxd"
     NSXI = "nsxi"
     NEOSCALE = "neoscale"
+    NSXIGEN2 = "nsxigen2"
 
 
 class TriggerEdge(str, Enum):
@@ -249,14 +250,6 @@ class RoiSet(BaseApiModel):
 # =============================================================================
 
 
-class ExposureSettings(BaseApiModel):
-    EXPOSURE_TIME_MIN: ClassVar[float] = 0.0234375
-    EXPOSURE_TIME_MAX: ClassVar[float] = 5.0
-
-    uz: float | None = Field(None, ge=EXPOSURE_TIME_MIN, le=EXPOSURE_TIME_MAX)
-    vz: float | None = Field(None, ge=EXPOSURE_TIME_MIN, le=EXPOSURE_TIME_MAX)
-
-
 class CroppingSettings(BaseApiModel):
     H_SIZE_MIN: ClassVar[int] = 120
     H_SIZE_MAX: ClassVar[int] = 800
@@ -273,9 +266,31 @@ class CroppingSettings(BaseApiModel):
 
 
 class CameraSettings(BaseApiModel):
-    exposure_time: ExposureSettings | None = Field(None, alias="exposureTime")
+    # Exposure times as an open map: channel key -> time in microseconds (µs). The valid keys
+    # depend on the active camera type (see CameraUnitType): plane-based cameras use "uz" (and
+    # "vz" for dual-plane types); NSX-I-Gen2 uses six lighting channels — spotlight_uz/vz,
+    # domelight_uz/vz, backlight_uz/vz. Each value is quantized on the device to its channel's
+    # clock (spotlight and plane channels 1/128 µs, dome and backlight 1/150 µs). The bounds
+    # below mirror the API's additionalProperties envelope: the floor is the loosest per-channel
+    # minimum (dome/backlight = 3/150 = 0.02 µs) so no valid channel value is rejected.
+    EXPOSURE_TIME_MIN: ClassVar[float] = 0.02
+    EXPOSURE_TIME_MAX: ClassVar[float] = 5.0
+
+    exposure_time: dict[str, float] | None = Field(None, alias="exposureTime")
     cropping: CroppingSettings | None = None
     flip_image: bool | None = Field(None, alias="flipImage")
+
+    @field_validator("exposure_time")
+    @classmethod
+    def _validate_exposure_bounds(cls, value: dict[str, float] | None) -> dict[str, float] | None:
+        if value is not None:
+            for channel, micros in value.items():
+                if not cls.EXPOSURE_TIME_MIN <= micros <= cls.EXPOSURE_TIME_MAX:
+                    raise ValueError(
+                        f"exposure_time[{channel!r}] = {micros} µs is out of range "
+                        f"[{cls.EXPOSURE_TIME_MIN}, {cls.EXPOSURE_TIME_MAX}]"
+                    )
+        return value
 
 
 class AlgorithmSettings(BaseApiModel):
@@ -443,7 +458,7 @@ class AllSettings(BaseApiModel):
     @classmethod
     def default(cls) -> AllSettings:
         return cls(
-            camera=CameraSettings(exposure_time=ExposureSettings(uz=1.0), cropping=CroppingSettings(hsize=800, vsize1=700, vstart1=0), flip_image=False),
+            camera=CameraSettings(exposure_time={"uz": 1.0}, cropping=CroppingSettings(hsize=800, vsize1=700, vstart1=0), flip_image=False),
             calculation=CalculationSettings(include_partial_drops=False, background_correction=True, density=1.2, fixed_threshold=127, dispensing_gap=12.3),
             export=ExportSettings(
                 extra_info=ExtraInfoSettings(contours=False, drop_markings=False, measurement_information=False, reference_flight_axis=False, ruler=False),
