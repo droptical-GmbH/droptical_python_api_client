@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "droptical-api-client"
 # Versioned 1:1 with the device's OpenAPI spec (openapi.yaml).
-version = "2.0.0"
+version = "2.1.0"
 authors = [
   { name="Angelo Alvarez", email="angelo.alvarez@droptical-systems.com" }
 ]
@@ -69,6 +69,11 @@ ignore = []
 [tool.ruff.lint.isort]
 # Helps isort recognize the project's own modules
 known-first-party = ["droptical_api_client", "examples", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# The GUI example embeds the logo as an inline SVG string; its path-data lines are long by
+# nature and live inside a string literal (they cannot be wrapped or silenced line-by-line).
+"examples/gui/main.py" = ["E501"]
 
 [tool.mypy]
 # Enable the Pydantic plugin for mypy

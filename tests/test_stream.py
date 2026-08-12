@@ -19,11 +19,9 @@ import time
 
 import requests
 
-from tests.conftest import BASE  # backend target (env-configurable; default 127.0.0.1:80)
-
 from droptical_api_client import ValueMessage, dropticalAPIClient
 from droptical_api_client.client import CSP_PROTOCOL_MAJOR, PROTOCOL_HEADER_FORMAT, PROTOCOL_MAGIC_BYTES
-
+from tests.conftest import BASE  # backend target (env-configurable; default 127.0.0.1:80)
 
 # --- value-stream JSON carving (pure unit test, no sockets) ------------------
 

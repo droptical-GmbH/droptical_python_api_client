@@ -685,6 +685,18 @@ class Preset(BaseApiModel):
     updated_at: str | None = None
 
 
+class PresetVersion(BaseApiModel):
+    """One entry of a preset group's version history (``GET /presets/{id}/versions``)."""
+
+    id: int
+    gid: int
+    version: int
+    comment: str | None = None
+    compatibility: Any | None = None
+    deleted: bool = False
+    created_at: str | None = None
+
+
 # =============================================================================
 # Resources — infos / gpio
 # =============================================================================

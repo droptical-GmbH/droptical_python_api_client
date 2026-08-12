@@ -63,7 +63,7 @@ try:
         )
     except MeasurementTimeout as e:
         print(f"\nTimed out: {e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
     print(f"\nMeasurement #{m.id} finished: {m.status} ({m.frames_count} frames)")
 
     # --- fetch the measurement WITH its frames AND results in ONE call ------
@@ -102,7 +102,7 @@ try:
     done = api.list_measurements(filters=MeasurementFilters(status="done"), per_page=5).data
     print(f"\nMost recent done measurements: {[x.id for x in done]}")
     # Other lifecycle calls: iter_measurements(filters=...), get_measurement(id),
-    # abort_measurement(id), delete_measurement(id). Per-frame access without embedding:
+    # abort(), delete_measurement(id), bulk_delete_measurements(ids). Per-frame access without embedding:
     # list_measurement_frames(id) / get_measurement_frame(id, frame_id).
 
     print("Done.")

@@ -150,7 +150,7 @@ try:
                     print(f"   (export skipped: {exc})")
             except MeasurementTimeout:
                 print("   (measurement didn't finish in time — aborting)")
-                api.abort_measurement(measurement.id)
+                api.abort()
                 time.sleep(1.0)
             time.sleep(1.0)
             api.delete_measurement(measurement.id)

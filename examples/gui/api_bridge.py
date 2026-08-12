@@ -248,7 +248,7 @@ class GuiApiBridge(QObject):
             if self._is_cancelled:
                 logger.info("Measurement cancelled by user; aborting on device.")
                 try:
-                    self.api.abort_measurement(measurement.id)
+                    self.api.abort()
                 except DeviceError as e:
                     logger.warning(f"Could not abort measurement {measurement.id}: {e}")
                 return

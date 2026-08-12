@@ -78,7 +78,7 @@ def _ensure_idle_between_tests(client: dropticalAPIClient):
         for m in client.list_measurements(per_page=50).data:
             if m.status in ("in_progress", "waiting"):
                 try:
-                    client.abort_measurement(m.id)
+                    client.abort()
                 except Exception:  # noqa: BLE001
                     pass
         for _ in range(60):  # wait up to ~3s for the unit to report idle again

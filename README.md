@@ -146,8 +146,9 @@ page = api.list_measurements(per_page=50, status="done")
 for meas in api.iter_measurements(type="video"):    # walks every page
     print(meas.id, meas.status)
 
-api.abort_measurement(m.id)
+api.abort()                          # abort whatever is running (device-wide; see Machine actions)
 api.delete_measurement(m.id)
+api.bulk_delete_measurements([1, 2, 3])   # returns the number deleted
 ```
 
 ### Frames
@@ -168,6 +169,9 @@ for f in api.iter_measurement_frames(7):     # frames scoped to a measurement
 ```python
 api.reboot(); api.shutdown()
 api.reset_errors(); api.clear_messages()
+api.identify()                                # blink an LED to locate the unit
+api.abort()                                   # abort the current run (measurement/live/…)
+t_ms = api.get_machine_time()                 # machine clock, Unix epoch ms
 api.power_on_camera(); api.power_off_camera()
 api.set_lab_mode()
 api.set_production_mode(True)                 # False → lab mode
@@ -190,6 +194,7 @@ presets = api.list_presets(include_deleted=False, sort_by="id", direction="desc"
 p = api.create_preset("Recipe A", comment="…")
 api.edit_preset(p.id, name="Recipe A2")
 api.create_preset_version(p.id)
+versions = api.list_preset_versions(p.id)     # version history of the preset group
 api.load_preset(gid=p.gid, version=1)
 api.delete_preset(p.id)
 ```
@@ -199,6 +204,10 @@ api.delete_preset(p.id)
 ```python
 # Direct (streamed) download — returns zip bytes:
 data = api.download_measurement(7, format="csv", config_name="excel_global")
+
+# Bundled archives (zip bytes):
+report = api.download_report_archive()        # diagnostics: logs, config, machine snapshot
+licenses = api.download_licenses_archive()    # bundled third-party licenses
 
 # Queued export job (for large sets):
 job = api.create_measurement_export(7, format="json")

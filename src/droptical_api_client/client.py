@@ -43,6 +43,7 @@ from .models import (
     Page,
     Preset,
     PresetsChangedEvent,
+    PresetVersion,
     SettingsUpdatedEvent,
     TriggerAdapterSettings,
     ValueMessage,
@@ -494,6 +495,21 @@ class dropticalAPIClient:
     def clear_messages(self) -> None:
         self._request("POST", "/machine/clear-messages")
 
+    def identify(self) -> None:
+        """Make the device physically identify itself (e.g. blink an LED) so it can be located."""
+        self._request("POST", "/machine/identify")
+
+    def abort(self) -> None:
+        """Abort whatever the machine is currently running (measurement, live view, …).
+
+        Device-scoped, not tied to a specific measurement; the device no-ops if nothing is
+        running. The status is updated asynchronously — poll or listen for the change."""
+        self._request("POST", "/machine/abort")
+
+    def get_machine_time(self) -> int:
+        """Return the machine's current system time as Unix epoch milliseconds."""
+        return int(self._request("GET", "/machine/time")["epoch_ms"])
+
     def clear_data(self, confirm_serial: str) -> None:
         """Permanently delete all measurement data on the device.
 
@@ -601,11 +617,16 @@ class dropticalAPIClient:
             body["parameters"] = parameters
         return Measurement.model_validate(self._request("POST", "/measurements", json=body))
 
-    def abort_measurement(self, measurement_id: int) -> None:
-        self._request("POST", f"/measurements/{measurement_id}/abort")
-
     def delete_measurement(self, measurement_id: int) -> None:
         self._request("DELETE", f"/measurements/{measurement_id}")
+
+    def bulk_delete_measurements(self, ids: list[int]) -> int:
+        """Delete multiple measurements by id; returns the number deleted.
+
+        The whole batch is rejected (HTTP 409 → :class:`ConflictError`) if any measurement is
+        still running or has an active export job — nothing is deleted in that case."""
+        raw = self._request("DELETE", "/measurements", json={"ids": ids})
+        return int(raw.get("deleted", 0)) if isinstance(raw, dict) else 0
 
     # Convenience triggers (thin wrappers over create_measurement)
     def trigger_singleshot(self, *, sync: bool = False, parameters: list[dict[str, Any]] | None = None) -> Measurement:
@@ -640,7 +661,7 @@ class dropticalAPIClient:
         Returns the final :class:`Measurement`. ``on_poll(measurement)`` is
         invoked after every poll (progress UIs). If ``should_abort()`` returns
         True the loop stops early and the latest measurement is returned (this
-        does *not* abort it on the device — call :meth:`abort_measurement`
+        does *not* abort it on the device — call :meth:`abort`
         separately). Raises :class:`MeasurementTimeout` if ``timeout`` elapses
         before a terminal status (pass ``timeout=None`` to wait indefinitely).
         """
@@ -753,6 +774,14 @@ class dropticalAPIClient:
         ``images|csv|json|attachments``."""
         return self._request_bytes("GET", f"/measurements/{measurement_id}/download", params={"format": format, "config_name": config_name})
 
+    def download_report_archive(self) -> bytes:
+        """Download the diagnostic report archive as zip bytes (logs, config, machine snapshot, …)."""
+        return self._request_bytes("GET", "/downloads/report-archive")
+
+    def download_licenses_archive(self) -> bytes:
+        """Download the bundled third-party licenses archive as zip bytes."""
+        return self._request_bytes("GET", "/downloads/licenses-archive")
+
     def create_measurement_export(self, measurement_id: int, *, format: str, config_name: str | None = None, first_frame_id: int | None = None, last_frame_id: int | None = None) -> ExportJob:
         body = {"format": format, "config_name": config_name, "first_frame_id": first_frame_id, "last_frame_id": last_frame_id}
         raw = self._request("POST", f"/measurements/{measurement_id}/exports", json={k: v for k, v in body.items() if v is not None})
@@ -812,6 +841,12 @@ class dropticalAPIClient:
 
     def create_preset_version(self, preset_id: int, comment: str | None = None) -> Preset:
         return self._unwrap_preset(self._request("POST", f"/presets/{preset_id}/versions", json={k: v for k, v in {"comment": comment}.items() if v is not None}))
+
+    def list_preset_versions(self, preset_id: int) -> list[PresetVersion]:
+        """List all versions of the preset group the given preset belongs to, newest first."""
+        raw = self._request("GET", f"/presets/{preset_id}/versions")
+        data = raw.get("versions", []) if isinstance(raw, dict) else raw
+        return [PresetVersion.model_validate(v) for v in data]
 
     @staticmethod
     def _unwrap_preset(raw: Any) -> Preset:

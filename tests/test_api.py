@@ -13,10 +13,7 @@ import time
 import pytest
 import requests
 
-from tests.conftest import BASE  # backend target (env-configurable; default 127.0.0.1:80)
-
 from droptical_api_client import (
-    ConflictError,
     FrameFilters,
     MeasurementFilters,
     NotFoundError,
@@ -24,7 +21,7 @@ from droptical_api_client import (
     dropticalAPIClient,
 )
 from droptical_api_client.models import ActionSettings, AllSettings, CameraSettings, MeasurementType
-
+from tests.conftest import BASE  # backend target (env-configurable; default 127.0.0.1:80)
 
 # --- infos / connection -----------------------------------------------------
 
@@ -176,18 +173,22 @@ def test_get_missing_measurement_raises_not_found(client: dropticalAPIClient) ->
         client.get_measurement(999999)
 
 
-def test_abort_finished_measurement_conflicts(client: dropticalAPIClient) -> None:
-    m = client.create_measurement(MeasurementType.SINGLESHOT, sync=True)
-    assert m.status == "done"
-    with pytest.raises(ConflictError):  # a terminal measurement cannot be aborted
-        client.abort_measurement(m.id)
-
-
 def test_delete_measurement(client: dropticalAPIClient) -> None:
     m = client.create_measurement(MeasurementType.SINGLESHOT, sync=True)
     client.delete_measurement(m.id)
     with pytest.raises(NotFoundError):
         client.get_measurement(m.id)
+
+
+def test_bulk_delete_measurements(client: dropticalAPIClient) -> None:
+    a = client.create_measurement(MeasurementType.SINGLESHOT, sync=True)
+    b = client.create_measurement(MeasurementType.SINGLESHOT, sync=True)
+    deleted = client.bulk_delete_measurements([a.id, b.id])
+    assert deleted == 2
+    with pytest.raises(NotFoundError):
+        client.get_measurement(a.id)
+    with pytest.raises(NotFoundError):
+        client.get_measurement(b.id)
 
 
 def test_wait_for_measurement_polls_to_terminal(client: dropticalAPIClient) -> None:
@@ -360,6 +361,9 @@ def test_machine_actions(client: dropticalAPIClient) -> None:
     client.power_on_camera()
     client.set_production_mode(True)
     client.set_production_mode(False)
+    client.identify()
+    client.abort()  # device-scoped; no-ops if nothing is running
+    assert isinstance(client.get_machine_time(), int)
 
 
 def test_destructive_actions_require_matching_serial(client: dropticalAPIClient) -> None:
@@ -411,6 +415,8 @@ def test_preset_lifecycle(client: dropticalAPIClient) -> None:
     assert edited.name == "Renamed"
     versioned = client.create_preset_version(created.id)
     assert versioned.version == created.version + 1
+    history = client.list_preset_versions(created.id)
+    assert any(v.version == versioned.version for v in history)
     client.load_preset(gid=created.gid, version=versioned.version)  # load the current version
     client.load_preset(gid=0, version=1)  # switch back to the default so the created one is deletable
     client.delete_preset(created.id)

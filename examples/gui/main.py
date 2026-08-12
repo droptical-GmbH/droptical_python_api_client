@@ -8,12 +8,12 @@ import time
 from datetime import datetime
 from typing import Any
 
+import shiboken6
 from pydantic import ValidationError
 from PySide6.QtCore import QByteArray, QObject, QPoint, QRect, QRunnable, QSize, Qt, QThread, QThreadPool, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QColor, QIcon, QImage, QPainter, QPalette, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
-import shiboken6
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -215,7 +215,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 """
 
 
-def _apply_dark_palette(app: "QApplication") -> None:
+def _apply_dark_palette(app: QApplication) -> None:
     """Give the Fusion style a dark base palette so widgets NOT covered by the
     stylesheet (menus, tooltips, dialogs, message boxes) stay on-theme too."""
     pal = QPalette()
@@ -552,7 +552,7 @@ class FlowLayout(QLayout):
             total_w = sum(s.width() for s in sizes) + spacing * (len(items) - 1)
             x = effective.x() + max(0, (effective.width() - total_w) // 2)
             line_height = 0
-            for item, size in zip(items, sizes):
+            for item, size in zip(items, sizes, strict=False):
                 if not test_only:
                     item.setGeometry(QRect(QPoint(x, y), size))
                 x += size.width() + spacing
@@ -670,7 +670,7 @@ class _FooterStatus:
     ("Executing…", "Done.") live in the footer instead of eating content space.
     Resolves the status bar lazily — it is only ever written to at runtime."""
 
-    def __init__(self, window: "MainWindow") -> None:
+    def __init__(self, window: MainWindow) -> None:
         self._window = window
 
     def setText(self, text: str) -> None:
@@ -2555,7 +2555,7 @@ class MainWindow(QMainWindow):
 
     # ---- shared layout / output helpers ----------------------------------
 
-    def _section_card(self, title: str) -> "tuple[QGroupBox, QFormLayout]":
+    def _section_card(self, title: str) -> tuple[QGroupBox, QFormLayout]:
         """A titled settings card (same look as the Measurement panel) with a form layout
         inside. The title renders in the card's border like a legend."""
         box = QGroupBox(title)
@@ -2563,7 +2563,7 @@ class MainWindow(QMainWindow):
         form = QFormLayout(box)
         return box, form
 
-    def _input_panel(self, cards: "list[QWidget]") -> QWidget:
+    def _input_panel(self, cards: list[QWidget]) -> QWidget:
         """Right-hand input panel: a vertical stack of titled section cards. The trigger
         button lives outside this panel so it can span the full tab width."""
         panel = QWidget()
