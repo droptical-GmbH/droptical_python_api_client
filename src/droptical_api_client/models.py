@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from enum import Enum
 from typing import Any, ClassVar, Generic, TypeVar
 
@@ -251,14 +252,30 @@ class RoiSet(BaseApiModel):
 
 
 class CroppingSettings(BaseApiModel):
-    H_SIZE_MIN: ClassVar[int] = 120
-    H_SIZE_MAX: ClassVar[int] = 800
+    """The sensor window, in pixels.
+
+    Since API 2.2.0 each view carries its own Z window: ``zstart1`` / ``zstart2`` are absolute
+    sensor columns, ``zwidth`` is their shared width. They replace ``hsize``, which described a
+    single window forced to sit centred on the array and was stated as half its extent — the
+    conversion is ``zwidth = 2 * hsize``, ``zstart = 800 - hsize``.
+
+    ``zstart2`` exists only on camera types with two views, like ``vsize2`` / ``vstart2``. A
+    start plus the shared width must stay within the sensor (``zstart + zwidth <= 1600``); the
+    device rejects a request that breaks it.
+    """
+
+    Z_WIDTH_MIN: ClassVar[int] = 240
+    Z_WIDTH_MAX: ClassVar[int] = 1600
+    Z_START_MIN: ClassVar[int] = 0
+    Z_START_MAX: ClassVar[int] = 1600
     V_SIZE_MIN: ClassVar[int] = 150
     V_SIZE_MAX: ClassVar[int] = 1400
     V_START_MIN: ClassVar[int] = 0
     V_START_MAX: ClassVar[int] = 1400
 
-    hsize: int | None = Field(None, ge=H_SIZE_MIN, le=H_SIZE_MAX)
+    zwidth: int | None = Field(None, ge=Z_WIDTH_MIN, le=Z_WIDTH_MAX)
+    zstart1: int | None = Field(None, ge=Z_START_MIN, le=Z_START_MAX)
+    zstart2: int | None = Field(None, ge=Z_START_MIN, le=Z_START_MAX)
     vsize1: int | None = Field(None, ge=V_SIZE_MIN, le=V_SIZE_MAX)
     vsize2: int | None = Field(None, ge=V_SIZE_MIN, le=V_SIZE_MAX)
     vstart1: int | None = Field(None, ge=V_START_MIN, le=V_START_MAX)
@@ -411,6 +428,8 @@ class GeneralSettings(BaseApiModel):
     gpo: GPOSettings | None = None
     output_trigger_edge: TriggerEdge | None = Field(None, alias="outputTriggerEdge")
     input_trigger_edge: TriggerEdge | None = Field(None, alias="inputTriggerEdge")
+    # Whether the incoming trigger signal is passed through to the trigger output unchanged.
+    trigger_passthrough: bool | None = Field(None, alias="triggerPassthrough")
 
 
 class Limits(BaseApiModel):
@@ -458,7 +477,7 @@ class AllSettings(BaseApiModel):
     @classmethod
     def default(cls) -> AllSettings:
         return cls(
-            camera=CameraSettings(exposure_time={"uz": 1.0}, cropping=CroppingSettings(hsize=800, vsize1=700, vstart1=0), flip_image=False),
+            camera=CameraSettings(exposure_time={"uz": 1.0}, cropping=CroppingSettings(zwidth=1600, zstart1=0, vsize1=700, vstart1=0), flip_image=False),
             calculation=CalculationSettings(include_partial_drops=False, background_correction=True, density=1.2, fixed_threshold=127, dispensing_gap=12.3),
             export=ExportSettings(
                 extra_info=ExtraInfoSettings(contours=False, drop_markings=False, measurement_information=False, reference_flight_axis=False, ruler=False),
@@ -588,6 +607,64 @@ class Feature(BaseApiModel):
     entity_type: str | None = None
 
 
+class RoiSize(BaseApiModel):
+    """One region size an algorithm accepts, in pixels."""
+
+    width: int
+    height: int
+
+
+class AlgorithmFieldState(BaseApiModel):
+    """What an algorithm does to one settings field.
+
+    ``state``: ``editable`` (normal), ``readonly`` (reported, rejected on write), ``irrelevant``
+    (no effect under this algorithm; the value is kept), ``forced`` (the machine derives it —
+    see ``value``).
+
+    ``required_value`` is deliberately not the same as ``forced``: nobody writes it. The machine
+    REFUSES the measurement without it, so the caller has to send the right value itself and
+    ``update_settings`` rejects the combination with 422.
+    """
+
+    state: str
+    value: Any | None = None
+    # `requiredValue` is the one camelCase key inside an otherwise snake_case payload — the
+    # base class's alias generator already spells it that way, so no explicit alias is needed.
+    required_value: Any | None = None
+
+
+class AlgorithmRoi(BaseApiModel):
+    """How an algorithm treats the regions.
+
+    ``allowed_sizes`` carries three distinct states and the difference matters: ``None`` means
+    the algorithm does not restrict the region; ``[]`` means it does but the machine has not
+    published which sizes yet, so the algorithm cannot be selected; a list means exactly those
+    sizes, sorted smallest first.
+    """
+
+    allowed_sizes: list[RoiSize] | None = None
+    applies_to: list[str] | None = None
+    origin_freely_choosable: bool | None = None
+    nozzle_tip: dict[str, Any] | None = None
+
+
+class Algorithm(BaseApiModel):
+    """One detection algorithm and what selecting it means for the settings tree.
+
+    Fetched via :meth:`dropticalAPIClient.get_algorithms`. Use it to find out what a selection
+    demands before writing it, instead of learning it from a 422.
+    """
+
+    key: str
+    label: str | None = None
+    description: str | None = None
+    active: bool | None = None
+    camera_types: list[str] | None = None
+    # Keyed by settings path, in the same snake_case spelling PATCH /settings uses.
+    fields: dict[str, AlgorithmFieldState] | None = None
+    roi: AlgorithmRoi | None = None
+
+
 class MeasurementFrame(BaseApiModel):
     """A measurement frame resource (from the REST API). Distinct from the TCP
     stream ``ImageFrame`` (a live image), which lives in ``client.py``."""
@@ -596,6 +673,8 @@ class MeasurementFrame(BaseApiModel):
     measurement_id: int | None = None
     index: int | None = None
     url: str | None = None
+    # ISO 8601 in UTC, to the millisecond. It is the time the frame was CAPTURED, as the unit
+    # reports it — not the time the record was stored.
     timestamp: str | None = None
     # Present only on the per-frame detail (GET /frames/{id} or ?include=rois); the lean list form omits it.
     rois: list[FrameRoi] | None = None
@@ -625,6 +704,11 @@ class FrameFilters(BaseModel):
     date_to: str | None = None
     feature: int | list[int] | None = None  # feature id(s) a ROI/drop result must match
     status: str | list[str] | None = None  # ResultStatus api value(s), e.g. "nominal", "warning_minus"
+    # Value-range filters: one entry per feature, each with the feature id and at least one
+    # bound, e.g. [{"feature": 3, "min": 0.3, "max": 0.5}]. Bounds are in the feature's own
+    # unit as published by GET /features; an entry naming an unknown feature, or carrying no
+    # bound at all, is rejected with a 422 rather than ignored.
+    feature_filters: list[dict[str, Any]] | None = None
 
     def to_query(self) -> dict[str, Any]:
         """Serialize to snake_case query parameters, omitting unset fields."""
@@ -653,6 +737,11 @@ class MeasurementFilters(BaseModel):
     date_to: str | None = None
     preset: int | list[int] | None = None
     parameter_filters: list[dict[str, Any]] | None = None
+    # Value-range filters: one entry per feature, each with the feature id and at least one
+    # bound, e.g. [{"feature": 3, "min": 0.3, "max": 0.5}]. Bounds are in the feature's own
+    # unit as published by GET /features; an entry naming an unknown feature, or carrying no
+    # bound at all, is rejected with a 422 rather than ignored.
+    feature_filters: list[dict[str, Any]] | None = None
 
     def to_query(self) -> dict[str, Any]:
         """Serialize to snake_case query parameters, omitting unset fields."""
@@ -671,6 +760,20 @@ class ExportJob(BaseApiModel):
     started_at: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+    @field_validator("filters", mode="before")
+    @classmethod
+    def _accept_an_empty_list_as_an_empty_bag(cls, value: Any) -> Any:
+        """Read an unfiltered export's empty ``filters`` from devices that send ``[]``.
+
+        The contract types the field as an object, but PHP serialises an empty array as a
+        JSON array, so devices built before that was pinned report ``"filters": []`` for
+        an export with no filters. Only the empty list is accepted -- a non-empty list is
+        a genuine type error and still raises.
+        """
+        if value == []:
+            return {}
+        return value
 
 
 class Preset(BaseApiModel):
@@ -731,6 +834,16 @@ class CameraUnitTemperatures(BaseApiModel):
     sensor: float | None = None
 
 
+class SystemWear(BaseApiModel):
+    """How far the storage is through its rated write endurance.
+
+    The NVMe SMART/health log's "percentage used": 0 is a new drive, 100 means the rated
+    endurance is spent — and the value keeps counting past 100, so it is not capped here.
+    """
+
+    ssd: int | None = None
+
+
 class SystemInfo(BaseApiModel):
     status: str | None = None
     mode: str | None = None
@@ -739,7 +852,18 @@ class SystemInfo(BaseApiModel):
     bundle_version: str | None = Field(None, alias="bundleVersion")
     software_version: str | None = Field(None, validation_alias=AliasChoices("softwareVersion", "sw"))
     gui_version: str | None = Field(None, alias="guiVersion")
+    # The version of the v2 contract the unit implements, equal to `info.version` of
+    # openapi.yaml and therefore to this package's own version. Read it to decide what may be
+    # called: `software_version` cannot answer that, because a released build and unmerged work
+    # on the same release branch report the identical string.
+    #
+    # `None` on a unit whose build predates the field, which is itself the answer -- it is
+    # older than this contract. And on a build that was never released the number describes the
+    # spec's state rather than what the build implements, so check the bundle version first: a
+    # released bundle is a bare semver, `0.0.<counter>` and `-dev` are not.
+    api_version: str | None = Field(None, alias="apiVersion")
     temperatures: SystemTemperatures | None = None
+    wear: SystemWear | None = None
     # Pending machine errors / dismissible info-warning notifications. The spec models the
     # items as free-form objects (no fixed schema), so they stay as raw dicts here.
     errors: list[dict[str, Any]] | None = None
@@ -891,7 +1015,15 @@ class CsvFormatConfig(BaseApiModel):
 
 
 class CsvTimeConfig(BaseApiModel):
+    """How the frame timestamp is written into an exported CSV.
+
+    A frame's time is recorded to the millisecond, and every hardcoded config writes it that
+    way. ``UNIX_SEC`` is the only format that rounds, by definition.
+    """
+
     format: str | None = None  # ISO8601 | UNIX_SEC | UNIX_MS | CUSTOM_STRING
+    # moment.js tokens, e.g. ``DD.MM.YYYY HH:mm:ss.SSS``. ``SSS`` is the millisecond — leave it
+    # out to write whole seconds. Required when ``format`` is ``CUSTOM_STRING``.
     custom_format_string: str | None = None
     timezone: str | None = None
     split_date_and_time: bool | None = None
@@ -901,6 +1033,9 @@ class CsvDataConfig(BaseApiModel):
     layout: str | None = None  # e.g. wide_feature_piped (row/column arrangement of the exported data)
     include_header: bool | None = None
     include_units_in_header: bool | None = None
+    # One column per measurement-parameter key, right after the identity columns. On by default
+    # on the device, so an export carries the parameter columns unless this is switched off.
+    include_measurement_parameters: bool | None = None
     include_metadata_block: bool | None = None
     metadata_prefix: str | None = None
     null_value_strategy: str | None = None  # EMPTY | NAN | NULL | CUSTOM_VALUE
@@ -1016,7 +1151,10 @@ class Page(BaseModel, Generic[T]):
     prev_cursor: str | None = None
     per_page: int | None = None
 
-    def __iter__(self):  # type: ignore[override]
+    # Deliberately NOT pydantic's own `__iter__`, which yields (field name, value) pairs:
+    # iterating a page should walk the records on it, so `for m in page` reads the way the
+    # helpers that return it suggest. `dict(page)` is the thing this gives up.
+    def __iter__(self) -> Iterator[T]:  # type: ignore[override]
         return iter(self.data)
 
     def __len__(self) -> int:

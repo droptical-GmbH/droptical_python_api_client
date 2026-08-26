@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "droptical-api-client"
 # Versioned 1:1 with the device's OpenAPI spec (openapi.yaml).
-version = "2.1.0"
+version = "2.2.0"
 authors = [
   { name="Angelo Alvarez", email="angelo.alvarez@droptical-systems.com" }
 ]

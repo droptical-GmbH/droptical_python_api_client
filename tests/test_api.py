@@ -8,7 +8,11 @@ pre-existing state.
 
 from __future__ import annotations
 
+import csv
+import io
+import re
 import time
+import zipfile
 
 import pytest
 import requests
@@ -40,11 +44,19 @@ def test_get_machine_info_alias(client: dropticalAPIClient) -> None:
     assert client.get_machine_info().system.mode == "lab"
 
 
+# Feature id 1 is the per-drop volume. Ids are the stable key — they are foreign keys in
+# measurement data and in the stream payloads. NAMES follow the unit's catalogue and do change:
+# "Volume" became "Drop Volume" with system release 3.1.0, which is why nothing here matches
+# on one.
+VOLUME_FEATURE_ID = 1
+
+
 def test_get_features(client: dropticalAPIClient) -> None:
     features = client.get_features()
     assert features, "the feature catalogue is non-empty"
-    vol = next((f for f in features if f.name == "Volume"), None)
+    vol = next((f for f in features if f.id == VOLUME_FEATURE_ID), None)
     assert vol is not None and vol.unit == "nl"
+    assert vol.name, "a feature carries a name, whatever the firmware calls it today"
     assert vol.value_type == "float"  # camelCase valueType -> snake_case field
 
 
@@ -85,11 +97,14 @@ def test_update_settings_rejects_multiple_rois(client: dropticalAPIClient) -> No
 
 
 def test_update_settings_rejects_out_of_range_value(client: dropticalAPIClient) -> None:
-    # The backend enforces field bounds (fixedThreshold: 0-255) and returns a 422 with a
+    # The backend enforces field bounds (fixed_threshold: 0-255) and returns a 422 with a
     # per-field errors map, rather than echoing a value the client could not parse back.
+    #
+    # API 2.2.0 renamed the error keys: they are settings paths in the same snake_case the
+    # request body uses, where some used to come back in the internal camelCase spelling.
     with pytest.raises(ValidationError) as exc:
         client.update_settings({"calculation": {"fixedThreshold": 99999}})
-    assert "calculation.fixedThreshold" in exc.value.errors
+    assert "calculation.fixed_threshold" in exc.value.errors
 
 
 def test_get_settings_exposes_read_only_options(client: dropticalAPIClient) -> None:
@@ -356,6 +371,55 @@ def test_frames_list_exposes_bulk_actions(client: dropticalAPIClient) -> None:
 # --- machine actions / gpio -------------------------------------------------
 
 
+def test_production_is_a_mode_not_a_measurement_type(client: dropticalAPIClient) -> None:
+    """Production runs for as long as the mode is on, so it cannot be created as a shot.
+
+    It used to be accepted here and wrote a measurement the device never ran. The client lost
+    ``trigger_production()`` with it; the way in is ``set_production_mode()``.
+    """
+    with pytest.raises(ValidationError):
+        client.create_measurement(MeasurementType.PRODUCTION)
+
+    assert not hasattr(client, "trigger_production")
+
+    # The type is still a type: reading and filtering production measurements is unaffected.
+    client.list_measurements(per_page=1, type="production")
+
+
+def test_production_mode_records_a_measurement(client: dropticalAPIClient) -> None:
+    """Entering the mode has to leave a measurement behind, and leaving it has to close it.
+
+    The mode used to open without one: values streamed and nothing on the device recorded them.
+    """
+    before = client.list_measurements(per_page=1, type="production").data
+    highest = before[0].id if before else 0
+
+    client.set_production_mode(True)
+    try:
+        started = client.list_measurements(per_page=1, type="production").data
+        assert started, "entering production mode recorded no measurement"
+        assert started[0].id > highest, "no new production measurement was created"
+    finally:
+        client.set_production_mode(False)
+
+    closed = client.get_measurement(started[0].id)
+    # `status` is a plain string on the model, so this compares what the API actually returns.
+    assert closed.status == "done", (
+        f"leaving production mode left the measurement in {closed.status!r}"
+    )
+
+
+def test_licenses_download_is_one_text_file(client: dropticalAPIClient) -> None:
+    """One plain text file, the agreement first — it used to be a zip of separate files."""
+    text = client.download_licenses()
+
+    assert isinstance(text, str)
+    assert text.strip(), "the licence download was empty"
+    # Whatever a unit carries, the EULA leads when it is installed at all.
+    head = text[:400].upper()
+    assert "EULA" in head or "LICENSE" in head or "LICENCE" in head
+
+
 def test_machine_actions(client: dropticalAPIClient) -> None:
     client.reboot()
     client.power_on_camera()
@@ -504,6 +568,42 @@ def test_download_measurement_honours_csv_config(client: dropticalAPIClient) -> 
     assert client.download_measurement(m.id, format="csv", config_name="python_pandas").startswith(b"PK")
 
 
+@pytest.mark.parametrize(
+    ("config_name", "delimiter", "pattern"),
+    [
+        ("excel_dach", ";", r"^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}\.\d{3}$"),
+        ("excel_global", ",", r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$"),
+        ("python_pandas", ",", r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$"),
+    ],
+)
+def test_exported_timestamp_carries_milliseconds(
+    client: dropticalAPIClient, config_name: str, delimiter: str, pattern: str
+) -> None:
+    """Every hardcoded config writes the frame time to the millisecond.
+
+    A frame is timestamped to that precision at capture, and drops of one measurement are
+    milliseconds apart — a whole-second stamp made several of them look simultaneous. Asserted
+    on the file rather than on the config, because the format string and the formatter are two
+    places where the precision can be lost.
+    """
+    m = client.create_measurement(MeasurementType.SINGLESHOT, sync=True)
+    blob = client.download_measurement(m.id, format="csv", config_name=config_name)
+
+    archive = zipfile.ZipFile(io.BytesIO(blob))
+    inner = next(n for n in archive.namelist() if n.endswith(".csv"))
+    # The metadata block is commented out with "# " and is not part of the table.
+    lines = [
+        line
+        for line in archive.read(inner).decode("utf-8-sig", "replace").splitlines()
+        if line and not line.startswith("#")
+    ]
+    rows = list(csv.reader(lines, delimiter=delimiter))
+    assert len(rows) >= 2, f"{config_name}: the export has a header but no data row"
+
+    timestamp = rows[1][rows[0].index("Timestamp")]
+    assert re.match(pattern, timestamp), f"{config_name}: {timestamp!r} is not a millisecond timestamp"
+
+
 # --- settings idle lock -----------------------------------------------------
 
 
@@ -523,17 +623,21 @@ def test_csv_export_config_roundtrip(client: dropticalAPIClient) -> None:
     assert "excel_dach" in cfg.hardcoded_configs
     assert cfg.hardcoded_configs["excel_dach"].format is not None
     assert cfg.hardcoded_configs["excel_dach"].format.include_bom is True  # camelCase includeBOM alias
+    # The parameter columns are on in every hardcoded config.
+    assert cfg.hardcoded_configs["excel_dach"].data is not None
+    assert cfg.hardcoded_configs["excel_dach"].data.include_measurement_parameters is True
 
     saved = client.update_csv_export_config({
         "format": {"delimiter": ",", "decimalSeparator": ".", "quoteCharacter": '"', "quoteRule": "ALL", "encoding": "UTF-8", "includeBOM": False, "lineEnding": "LF"},
         "time": {"format": "UNIX_MS", "timezone": "UTC", "splitDateAndTime": True},
-        "data": {"includeHeader": True, "includeUnitsInHeader": False, "includeMetadataBlock": False, "metadataPrefix": "# ", "nullValueStrategy": "NAN"},
+        "data": {"includeHeader": True, "includeUnitsInHeader": False, "includeMeasurementParameters": False, "includeMetadataBlock": False, "metadataPrefix": "# ", "nullValueStrategy": "NAN"},
         "output": {"maxRowsPerFile": None, "decimalPlaces": 4},
     })
     # The server forces config_name to "custom" regardless of input.
     assert saved.config_name == "custom"
     assert saved.output is not None and saved.output.decimal_places == 4
     assert saved.format is not None and saved.format.include_bom is False
+    assert saved.data is not None and saved.data.include_measurement_parameters is False
 
 
 def test_csv_export_config_rejects_incomplete(client: dropticalAPIClient) -> None:

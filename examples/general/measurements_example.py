@@ -76,14 +76,17 @@ try:
     if detail.frames_meta and detail.frames_meta.truncated:
         print(f"  (embedded {detail.frames_meta.embedded} frames; more at {detail.frames_meta.next})")
 
-    # --- resolve feature names and aggregate the per-drop values ------------
-    by_name = {f.name: f for f in api.get_features()}
+    # --- resolve the features and aggregate the per-drop values -------------
+    # Keyed by id: that is what the results carry, and what stays put across firmware
+    # versions. The name is only for printing — the catalogue decides what it reads.
+    by_id = {f.id: f for f in api.get_features()}
     print(f"\nAnalysing {sum(len(list(frame_results(f))) for f in frames)} result(s) "
           f"across {len(frames)} frame(s):")
-    for feature_name in ("Volume", "Velocity"):
-        feature = by_name.get(feature_name)
+    for feature_id in (1, 7):  # 1 = drop volume, 7 = main drop velocity
+        feature = by_id.get(feature_id)
         if not feature:
             continue
+        feature_name = feature.name or f"feature {feature_id}"
         values = [r.value for f in frames for r in frame_results(f)
                   if r.feature_id == feature.id and isinstance(r.value, (int, float))]
         if values:

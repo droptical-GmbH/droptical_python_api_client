@@ -22,6 +22,7 @@ import requests
 
 from .models import (
     TERMINAL_MEASUREMENT_STATUSES,
+    Algorithm,
     AllSettings,
     Attachment,
     BaseApiModel,
@@ -405,10 +406,22 @@ class dropticalAPIClient:
                 # which the API's boolean validation rejects.
                 out[key] = "1" if value else "0"
             elif isinstance(value, (list, tuple)):
-                # Array query params must use the `key[]=` notation, otherwise the API
-                # collapses repeated scalars to the last value and the filter is silently ignored
-                # (e.g. type / status / feature / measurement_ids / frame_ids).
-                out[f"{key}[]"] = list(value)
+                items = list(value)
+                if items and all(isinstance(item, Mapping) for item in items):
+                    # A list of objects is sent the way PHP reads it back:
+                    #   feature_filters[0][feature]=3&feature_filters[0][min]=0.3
+                    # The `key[]=` form below would send the dicts' *key names* as values —
+                    # `parameter_filters[]=key&parameter_filters[]=min` — and the API would
+                    # quietly filter by nothing.
+                    for index, item in enumerate(items):
+                        for field, field_value in item.items():
+                            if field_value is not None:
+                                out[f"{key}[{index}][{field}]"] = field_value
+                else:
+                    # Array query params must use the `key[]=` notation, otherwise the API
+                    # collapses repeated scalars to the last value and the filter is silently ignored
+                    # (e.g. type / status / feature / measurement_ids / frame_ids).
+                    out[f"{key}[]"] = items
             else:
                 out[key] = value
         return out
@@ -483,6 +496,22 @@ class dropticalAPIClient:
         data = raw.get("data", []) if isinstance(raw, dict) else raw
         return [Feature.model_validate(f) for f in data]
 
+    def get_algorithms(self) -> list[Algorithm]:
+        """The detection algorithms this machine offers for the attached camera, and what
+        selecting each one means for the settings tree.
+
+        Read it before writing ``calculation.algorithms.active``: an algorithm can take a
+        setting out of use, derive a value itself, demand a particular value, or fix the size
+        of the processing region. ``update_settings`` rejects a request that contradicts any of
+        that, so checking here turns a 422 into a decision you make up front.
+
+        The descriptors come from a catalogue the machine writes per firmware build, so the
+        result only changes with a firmware update.
+        """
+        raw = self._request("GET", "/algorithms")
+        data = raw.get("algorithms", []) if isinstance(raw, dict) else raw
+        return [Algorithm.model_validate(a) for a in data]
+
     def reboot(self) -> None:
         self._request("POST", "/machine/reboot")
 
@@ -541,11 +570,25 @@ class dropticalAPIClient:
         self._request("POST", "/machine/mode/lab")
 
     def set_production_mode(self, enabled: bool = True) -> None:
-        """Enter production mode (``enabled=True``) or return to lab mode."""
+        """Enter production mode (``enabled=True``) or return to lab mode.
+
+        This is the only way to run a production measurement. Entering the mode creates the
+        measurement and starts it on the device; leaving the mode ends it. There is no
+        ``trigger_production()`` — production is a mode that runs until it is switched off, not
+        a shot that is fired once.
+
+        Raises :class:`NotIdleError` (HTTP 423) when the unit is busy; production is itself a
+        busy state and cannot be entered from a running measurement. Returning to lab mode is
+        always allowed.
+        """
         self._request("POST", "/machine/mode/production" if enabled else "/machine/mode/lab")
 
     def set_streaming_mode(self, enabled: bool = True) -> None:
-        """Enter streaming mode (``enabled=True``) or return to lab mode."""
+        """Enter streaming mode (``enabled=True``) or return to lab mode.
+
+        Raises :class:`NotIdleError` (HTTP 423) when the unit is busy. Returning to lab mode is
+        always allowed.
+        """
         self._request("POST", "/machine/mode/streaming" if enabled else "/machine/mode/lab")
 
     def get_gpio_levels(self) -> GpioLevels:
@@ -574,7 +617,9 @@ class dropticalAPIClient:
         Pass a typed :class:`MeasurementFilters` (recommended) and/or plain keyword filters:
         ``id`` / ``id_from`` / ``id_to``, ``type`` and ``status`` (value or list),
         ``min_frames`` / ``max_frames``, ``date_from`` / ``date_to`` (or legacy ``date``),
-        ``preset`` (id or list), and ``parameter_filters``. e.g.
+        ``preset`` (id or list), ``parameter_filters``, and ``feature_filters`` — value ranges
+        such as ``[{"feature": 3, "min": 0.3, "max": 0.5}]``, where a measurement matches as
+        soon as a single one of its individual measurements falls into the range. e.g.
         ``list_measurements(filters=MeasurementFilters(status="done", type="video"))``.
 
         ``include="frames"`` (or ``"frames.results"``) embeds a bounded preview of each
@@ -638,9 +683,6 @@ class dropticalAPIClient:
     def trigger_video(self, *, sync: bool = False, parameters: list[dict[str, Any]] | None = None) -> Measurement:
         return self.create_measurement(MeasurementType.VIDEO, sync=sync, parameters=parameters)
 
-    def trigger_production(self, *, sync: bool = False, parameters: list[dict[str, Any]] | None = None) -> Measurement:
-        return self.create_measurement(MeasurementType.PRODUCTION, sync=sync, parameters=parameters)
-
     def wait_for_measurement(
         self,
         measurement_id: int,
@@ -700,6 +742,10 @@ class dropticalAPIClient:
         * ``feature`` — feature id, or a list of ids, the frame has a ROI/drop result for
         * ``status`` — result status as the ``ResultStatus`` api value (e.g. ``"nominal"``,
           ``"warning_plus"``), or a list of them; case-insensitive
+        * ``feature_filters`` — value ranges, one entry per feature:
+          ``[{"feature": 3, "min": 0.3, "max": 0.5}]``. A frame matches when one of its
+          measured values falls into the range; several entries all have to match, though not
+          necessarily in the same drop or region
 
         e.g. ``list_frames(filters=FrameFilters(measurement_id=7, has_image=True))`` or the
         shorthand ``list_frames(measurement_id=7, has_image=True)``. The measurement-scoped
@@ -778,9 +824,13 @@ class dropticalAPIClient:
         """Download the diagnostic report archive as zip bytes (logs, config, machine snapshot, …)."""
         return self._request_bytes("GET", "/downloads/report-archive")
 
-    def download_licenses_archive(self) -> bytes:
-        """Download the bundled third-party licenses archive as zip bytes."""
-        return self._request_bytes("GET", "/downloads/licenses-archive")
+    def download_licenses(self) -> str:
+        """Download every licence document the unit carries as one plain text file.
+
+        The EULA comes first, then the collected notices, each section headed by the file it
+        came from. This used to be ``download_licenses_archive()`` and returned zip bytes.
+        """
+        return self._request_bytes("GET", "/downloads/licenses-archive").decode("utf-8")
 
     def create_measurement_export(self, measurement_id: int, *, format: str, config_name: str | None = None, first_frame_id: int | None = None, last_frame_id: int | None = None) -> ExportJob:
         body = {"format": format, "config_name": config_name, "first_frame_id": first_frame_id, "last_frame_id": last_frame_id}
@@ -873,7 +923,10 @@ class dropticalAPIClient:
 
     def get_csv_export_config(self) -> CsvExportConfigCollection:
         """Read the CSV export configs: the read-only hardcoded presets plus the
-        user-editable ``custom_config`` (or None if not yet configured)."""
+        user-editable ``custom_config`` (or None if not yet configured).
+
+        All three hardcoded presets write the frame timestamp with milliseconds
+        (``…:18.460``); a parser pinned to whole seconds has to be relaxed."""
         return CsvExportConfigCollection.model_validate(self._request("GET", "/gui-settings/csv-export-config"))
 
     def update_csv_export_config(self, config: CsvExportConfig | Mapping[str, Any]) -> CsvExportConfig:

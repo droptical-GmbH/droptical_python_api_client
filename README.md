@@ -16,8 +16,21 @@ The project includes:
   * An integration test suite that runs against a live device/backend (no bundled mock).
 
 > **Versioning:** this client tracks the device's OpenAPI specification 1:1. Client
-> **2.0.0** targets **OpenAPI 2.0.0** (the RESTful `/api/v2` surface). The previous
-> command-based API (`POST /api/control`) is no longer used.
+> **2.2.0** targets **OpenAPI 2.2.0** (the RESTful `/api/v2` surface). The previous
+> command-based API (`POST /api/control`) is not used.
+>
+> The device reports the contract it implements as `get_infos().system.api_version`, so the
+> match is checkable rather than assumed:
+>
+> ```python
+> infos = api.get_infos()
+> print(infos.system.api_version)      # "2.2.0" — the contract this unit implements
+> print(infos.system.bundle_version)   # a bare semver is a release; "0.0.<n>" / "-dev" is not
+> ```
+>
+> `api_version` is `None` on a unit whose build predates the field, which is itself the answer:
+> it is older than this contract. On a build that was never released the number describes the
+> spec's state rather than what the build implements — check `bundle_version` first.
 
 ## Features
 
@@ -129,6 +142,25 @@ Validation is enforced server-side: unknown keys, a second ROI, an out-of-bounds
 exclusion outside the nozzle raise `ValidationError` (with a per-field `.errors` map);
 changing settings while the unit is busy raises `NotIdleError`.
 
+Since API 2.2.0 the write is also checked against the selected detection algorithm, which can
+take a setting out of use, derive a value itself, demand a particular value, or fix the size of
+the processing region. `get_algorithms()` says what a selection demands, so you can decide up
+front instead of learning it from a `ValidationError`:
+
+```python
+for algorithm in api.get_algorithms():
+    sizes = algorithm.roi.allowed_sizes            # None = free, [] = not published yet
+    print(algorithm.key, algorithm.active, sizes)
+
+    for path, state in (algorithm.fields or {}).items():
+        print("  ", path, state.state, state.required_value)
+```
+
+Note that the response of `update_settings()` is the settings as they were **stored**, which is
+not always what was sent — the machine writes the values it owns (derived values, a pinned
+region size, `camera.exposure_time` snapped to the camera's clock grid). Use the response, not
+your request, as the truth.
+
 ### Measurements
 
 ```python
@@ -139,6 +171,10 @@ m = api.create_measurement(MeasurementType.SINGLESHOT, sync=True)
 # or the convenience wrappers:
 api.trigger_singleshot()
 api.trigger_multishot(sync=True)
+
+# `MeasurementType.PRODUCTION` is not creatable: production is a mode that runs until it is
+# switched off. Use `api.set_production_mode(True)` / `(False)`. Reading, filtering and
+# exporting production measurements works like any other type.
 
 # Read / list (cursor pagination)
 one = api.get_measurement(m.id)
@@ -174,7 +210,8 @@ api.abort()                                   # abort the current run (measureme
 t_ms = api.get_machine_time()                 # machine clock, Unix epoch ms
 api.power_on_camera(); api.power_off_camera()
 api.set_lab_mode()
-api.set_production_mode(True)                 # False → lab mode
+api.set_production_mode(True)                 # False → lab mode; starts/ends the production
+                                              # measurement. Raises NotIdleError when busy.
 # ⚠️ irreversible + device-scoped: pass the TARGET device's analysis-unit serial number
 # (api.get_infos().analysisunit.serial_number) as a confirmation. It guards against wiping the
 # WRONG unit in a multi-device setup — not access control. Pass the serial you *expect* rather
@@ -207,7 +244,9 @@ data = api.download_measurement(7, format="csv", config_name="excel_global")
 
 # Bundled archives (zip bytes):
 report = api.download_report_archive()        # diagnostics: logs, config, machine snapshot
-licenses = api.download_licenses_archive()    # bundled third-party licenses
+
+# Licences — one plain text file, the EULA first (was a zip before API 2.2.0):
+licenses = api.download_licenses()            # str
 
 # Queued export job (for large sets):
 job = api.create_measurement_export(7, format="json")

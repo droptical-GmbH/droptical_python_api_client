@@ -46,7 +46,10 @@ api = dropticalAPIClient()
 try:
     api.connect(args.ip_address, api_port=args.port)
 
-    volume = next((f for f in api.get_features() if f.name == "Volume"), None)
+    # Resolve by id, not by name: ids are stable (they key the stream payloads and the
+    # stored results), names follow the firmware's catalogue and have changed before.
+    VOLUME_FEATURE_ID = 1
+    volume = next((f for f in api.get_features() if f.id == VOLUME_FEATURE_ID), None)
 
     # --- fetch the most recent frames WITH results in ONE call --------------
     # The lean list omits per-frame rois; opt in with include="rois" so every frame
